@@ -1,0 +1,19 @@
+[project]
+name = "clpga-demo"
+version = "0.1.0"
+description = "Track golf balls in video using SAM3 and output portrait-cropped video"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "ultralytics>=8.4.23",
+    "opencv-python>=4.8",
+    "scipy>=1.11",
+]
+
+[project.scripts]
+clpga-demo = "clpga_demo.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
