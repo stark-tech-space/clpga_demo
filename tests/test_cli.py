@@ -1,4 +1,4 @@
-from clpga_demo.__main__ import build_parser
+from clpga_demo.__main__ import build_parser, resolve_args
 
 
 class TestCLIParser:
@@ -32,10 +32,56 @@ class TestCLIParser:
         assert args.confidence == 0.5
 
     def test_defaults(self):
-        """Default values should match spec."""
+        """Default values should be None (presets supply real defaults)."""
         parser = build_parser()
         args = parser.parse_args(["in.mp4", "-o", "out.mp4"])
-        assert args.smoothing_sigma == 0.5
-        assert args.smoothing_alpha == 0.15
+        assert args.smoothing_sigma is None
+        assert args.smoothing_alpha is None
         assert args.model == "sam3.pt"
-        assert args.confidence == 0.25
+        assert args.confidence is None
+
+
+class TestPresetArg:
+    def test_preset_default(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4"])
+        assert args.preset == "default"
+
+    def test_preset_putt(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--preset", "putt"])
+        assert args.preset == "putt"
+
+
+class TestResolveArgs:
+    def test_default_preset_values(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4"])
+        resolved = resolve_args(args)
+        assert resolved["smoothing_sigma_seconds"] == 0.5
+        assert resolved["confidence"] == 0.25
+        assert resolved["text"] == ["golf ball"]
+
+    def test_putt_preset_values(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--preset", "putt"])
+        resolved = resolve_args(args)
+        assert resolved["smoothing_sigma_seconds"] == 0.1
+        assert resolved["smoothing_alpha"] == 0.4
+        assert resolved["confidence"] == 0.15
+        assert resolved["text"] == ["golf ball on green"]
+
+    def test_cli_override_beats_preset(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--preset", "putt", "--smoothing-sigma", "0.3"])
+        resolved = resolve_args(args)
+        assert resolved["smoothing_sigma_seconds"] == 0.3
+        assert resolved["confidence"] == 0.15
+        assert resolved["text"] == ["golf ball on green"]
+
+    def test_confidence_override(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--preset", "putt", "--confidence", "0.5"])
+        resolved = resolve_args(args)
+        assert resolved["confidence"] == 0.5
+        assert resolved["smoothing_sigma_seconds"] == 0.1
