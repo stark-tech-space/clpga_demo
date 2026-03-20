@@ -21,6 +21,7 @@ def process_video(
     model: str = "sam3.pt",
     confidence: float = 0.25,
     smoothing_sigma_seconds: float = 0.5,
+    text: list[str] | None = None,
 ) -> None:
     """Process a pre-recorded video: track ball, smooth trajectory, crop portrait.
 
@@ -43,7 +44,7 @@ def process_video(
     src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
 
-    for frame_idx, orig_frame, boxes in track_video(source, model=model, confidence=confidence):
+    for frame_idx, orig_frame, boxes in track_video(source, model=model, confidence=confidence, text=text):
         result = select_ball(boxes, src_w, src_h, preferred_obj_id=selected_obj_id, frame_idx=frame_idx)
         if result is not None:
             if selected_obj_id is None:
@@ -83,6 +84,7 @@ def process_stream(
     model: str = "sam3.pt",
     confidence: float = 0.25,
     smoothing_alpha: float = 0.15,
+    text: list[str] | None = None,
 ) -> None:
     """Process a live stream: track ball, smooth with EMA, crop portrait in real-time.
 
@@ -101,7 +103,7 @@ def process_stream(
         retries = 0
         while retries <= max_retries:
             try:
-                for frame_idx, orig_frame, boxes in track_video(source, model=model, confidence=confidence):
+                for frame_idx, orig_frame, boxes in track_video(source, model=model, confidence=confidence, text=text):
                     src_h, src_w = orig_frame.shape[:2]
 
                     result = select_ball(boxes, src_w, src_h, preferred_obj_id=selected_obj_id, frame_idx=frame_idx)

@@ -105,3 +105,39 @@ class TestProcessStream:
         cap.release()
         expected_w = int(h * 9 / 16)
         assert abs(w - expected_w) <= 1
+
+
+class TestProcessVideoText:
+    def test_passes_text_to_tracker(self, tmp_path):
+        """process_video should forward the text parameter to track_video."""
+        input_path = str(tmp_path / "input.mp4")
+        output_path = str(tmp_path / "output.mp4")
+        _create_test_video(input_path)
+
+        captured_kwargs = {}
+
+        def capturing_tracker(source, **kwargs):
+            captured_kwargs.update(kwargs)
+            return _mock_track_video(source)
+
+        with patch("clpga_demo.pipeline.track_video", side_effect=capturing_tracker):
+            process_video(input_path, output_path, text=["golf ball on green"])
+
+        assert captured_kwargs["text"] == ["golf ball on green"]
+
+    def test_default_text_is_none(self, tmp_path):
+        """process_video without text param should pass None (tracker uses its default)."""
+        input_path = str(tmp_path / "input.mp4")
+        output_path = str(tmp_path / "output.mp4")
+        _create_test_video(input_path)
+
+        captured_kwargs = {}
+
+        def capturing_tracker(source, **kwargs):
+            captured_kwargs.update(kwargs)
+            return _mock_track_video(source)
+
+        with patch("clpga_demo.pipeline.track_video", side_effect=capturing_tracker):
+            process_video(input_path, output_path)
+
+        assert captured_kwargs.get("text") is None
