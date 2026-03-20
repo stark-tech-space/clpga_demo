@@ -20,11 +20,13 @@ New file `clpga_demo/presets.py`:
 SHOT_PRESETS = {
     "default": {
         "smoothing_sigma_seconds": 0.5,
+        "smoothing_alpha": 0.15,
         "confidence": 0.25,
         "text": ["golf ball"],
     },
     "putt": {
         "smoothing_sigma_seconds": 0.1,
+        "smoothing_alpha": 0.4,
         "confidence": 0.15,
         "text": ["golf ball on green"],
     },
