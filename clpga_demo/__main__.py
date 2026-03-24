@@ -21,6 +21,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--confidence", type=float, default=None, help="Detection confidence threshold")
     parser.add_argument("--momentum-history", type=int, default=None, help="Momentum tracker history size")
     parser.add_argument("--momentum-radius", type=float, default=None, help="Momentum acceptance radius scale factor")
+    parser.add_argument("--tracker", default=None, choices=["momentum", "kalman"], help="Tracker type: momentum or kalman")
+    parser.add_argument("--kalman-process-noise", type=float, default=None, help="Kalman process noise")
+    parser.add_argument("--kalman-measurement-noise", type=float, default=None, help="Kalman measurement noise")
+    parser.add_argument("--kalman-gate", type=float, default=None, help="Kalman gate threshold")
     return parser
 
 
@@ -35,6 +39,10 @@ def resolve_args(args: argparse.Namespace) -> dict:
         "confidence": "confidence",
         "momentum_history": "momentum_history_size",
         "momentum_radius": "momentum_radius_scale",
+        "tracker": "tracker_type",
+        "kalman_process_noise": "kalman_process_noise",
+        "kalman_measurement_noise": "kalman_measurement_noise",
+        "kalman_gate": "kalman_gate_threshold",
     }
 
     for cli_key, preset_key in cli_to_preset.items():
@@ -62,8 +70,12 @@ def main() -> None:
             confidence=resolved["confidence"],
             smoothing_sigma_seconds=resolved["smoothing_sigma_seconds"],
             text=resolved["text"],
+            tracker_type=resolved.get("tracker_type", "momentum"),
             momentum_history_size=resolved.get("momentum_history_size", 5),
             momentum_radius_scale=resolved.get("momentum_radius_scale", 4.0),
+            kalman_process_noise=resolved.get("kalman_process_noise", 1.0),
+            kalman_measurement_noise=resolved.get("kalman_measurement_noise", 1.0),
+            kalman_gate_threshold=resolved.get("kalman_gate_threshold", 9.0),
         )
     except (ValueError, RuntimeError) as e:
         print(f"Error: {e}", file=sys.stderr)

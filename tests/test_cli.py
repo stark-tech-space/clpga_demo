@@ -98,3 +98,44 @@ class TestResolveArgs:
         resolved = resolve_args(args)
         assert resolved["confidence"] == 0.5
         assert resolved["smoothing_sigma_seconds"] == 0.1
+
+
+class TestTrackerCLI:
+    def test_tracker_flag_parsed(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--tracker", "kalman"])
+        assert args.tracker == "kalman"
+
+    def test_tracker_default_none(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4"])
+        assert args.tracker is None
+
+    def test_kalman_flags_parsed(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "in.mp4", "-o", "out.mp4",
+            "--kalman-process-noise", "2.0",
+            "--kalman-measurement-noise", "3.0",
+            "--kalman-gate", "16.0",
+        ])
+        assert args.kalman_process_noise == 2.0
+        assert args.kalman_measurement_noise == 3.0
+        assert args.kalman_gate == 16.0
+
+    def test_tracker_resolve_to_preset(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--tracker", "kalman"])
+        resolved = resolve_args(args)
+        assert resolved["tracker_type"] == "kalman"
+
+    def test_kalman_resolve_overrides_preset(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "in.mp4", "-o", "out.mp4", "--preset", "putt",
+            "--kalman-process-noise", "2.0",
+        ])
+        resolved = resolve_args(args)
+        assert resolved["kalman_process_noise"] == 2.0
+        # Other putt values preserved
+        assert resolved["kalman_measurement_noise"] == 1.0
