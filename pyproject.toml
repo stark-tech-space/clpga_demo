@@ -8,10 +8,25 @@ dependencies = [
     "ultralytics>=8.4.23",
     "opencv-python-headless>=4.8",
     "scipy>=1.11",
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "clip",
+    "timm>=1.0.25",
+    "huggingface-hub[cli]>=1.7.1",
 ]
 
 [project.scripts]
 clpga-demo = "clpga_demo.__main__:main"
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+clip = { git = "https://github.com/ultralytics/CLIP.git" }
 
 [dependency-groups]
 dev = [

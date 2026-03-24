@@ -8,3 +8,22 @@ wheels/
 
 # Virtual environments
 .venv
+.venv2
+
+# Environment variables
+.env
+
+# Model weights
+*.pt
+
+# Video/clip folders
+clips/
+clips_momentum/
+clips_processed/
+
+# macOS resource forks
+._*
+.DS_Store
+
+# Misc
+.msc
