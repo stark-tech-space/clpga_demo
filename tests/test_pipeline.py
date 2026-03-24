@@ -85,28 +85,6 @@ class TestProcessVideo:
                 process_video(input_path, output_path)
 
 
-class TestProcessStream:
-    def test_creates_output_file(self, tmp_path):
-        """process_stream should create an output video file."""
-        from clpga_demo.pipeline import process_stream
-
-        input_path = str(tmp_path / "input.mp4")
-        output_path = str(tmp_path / "output.mp4")
-        _create_test_video(input_path)
-
-        with patch("clpga_demo.pipeline.track_video", side_effect=lambda s, **kw: _mock_track_video(s)):
-            process_stream(input_path, output_path)
-
-        assert Path(output_path).exists()
-        cap = cv2.VideoCapture(output_path)
-        assert cap.isOpened()
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        cap.release()
-        expected_w = int(h * 9 / 16)
-        assert abs(w - expected_w) <= 1
-
-
 class TestProcessVideoText:
     def test_passes_text_to_tracker(self, tmp_path):
         """process_video should forward the text parameter to track_video."""

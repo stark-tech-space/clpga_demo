@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from clpga_demo.smoother import EMASmoother, GaussianSmoother
+from clpga_demo.smoother import GaussianSmoother
 
 
 class TestGaussianSmoother:
@@ -54,47 +54,3 @@ class TestGaussianSmoother:
 
         smoother60 = GaussianSmoother.from_fps(fps=60.0, sigma_seconds=0.5)
         assert smoother60.sigma == 30.0
-
-
-class TestEMASmoother:
-    def test_first_position_passthrough(self):
-        """First position should be returned as-is."""
-        smoother = EMASmoother(alpha=0.15)
-        result = smoother.update(100.0, 200.0)
-        assert result == (100.0, 200.0)
-
-    def test_smooths_toward_new_position(self):
-        """After update, smoothed position should move toward new position."""
-        smoother = EMASmoother(alpha=0.5)
-        smoother.update(100.0, 200.0)
-        x, y = smoother.update(200.0, 300.0)
-        assert x == pytest.approx(150.0)
-        assert y == pytest.approx(250.0)
-
-    def test_hold_on_none(self):
-        """None input (occlusion) should hold the last known position."""
-        smoother = EMASmoother(alpha=0.15)
-        smoother.update(100.0, 200.0)
-        x, y = smoother.update(None, None)
-        assert x == pytest.approx(100.0)
-        assert y == pytest.approx(200.0)
-
-    def test_low_alpha_more_smooth(self):
-        """Lower alpha should produce smoother (slower-moving) results."""
-        slow = EMASmoother(alpha=0.1)
-        fast = EMASmoother(alpha=0.9)
-        slow.update(100.0, 100.0)
-        fast.update(100.0, 100.0)
-        sx, _ = slow.update(200.0, 100.0)
-        fx, _ = fast.update(200.0, 100.0)
-        # Fast alpha should move further toward 200
-        assert fx > sx
-
-    def test_reset(self):
-        """Reset should clear state so next update is passthrough."""
-        smoother = EMASmoother(alpha=0.5)
-        smoother.update(100.0, 200.0)
-        smoother.update(150.0, 250.0)
-        smoother.reset()
-        result = smoother.update(500.0, 600.0)
-        assert result == (500.0, 600.0)

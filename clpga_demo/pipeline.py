@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from clpga_demo.cropper import VideoWriter, calculate_crop
-from clpga_demo.smoother import EMASmoother, GaussianSmoother
+from clpga_demo.smoother import GaussianSmoother
 from clpga_demo.tracker import select_ball, track_video
 
 logger = logging.getLogger(__name__)
@@ -76,76 +76,3 @@ def process_video(
         cap.release()
 
     logger.info(f"Output written to {output}")
-
-
-def process_stream(
-    source: str,
-    output: str,
-    model: str = "sam3.pt",
-    confidence: float = 0.25,
-    smoothing_alpha: float = 0.15,
-    text: list[str] | None = None,
-) -> None:
-    """Process a live stream: track ball, smooth with EMA, crop portrait in real-time.
-
-    Single-pass pipeline — each frame is tracked, smoothed, and cropped immediately.
-    """
-    import time
-
-    smoother = EMASmoother(alpha=smoothing_alpha)
-    selected_obj_id: int | None = None
-    writer: VideoWriter | None = None
-    frames_since_lost = 0
-    fps_for_loss = 30.0  # will be updated from source
-    max_retries = 3
-
-    try:
-        retries = 0
-        while retries <= max_retries:
-            try:
-                for frame_idx, orig_frame, boxes in track_video(source, model=model, confidence=confidence, text=text):
-                    src_h, src_w = orig_frame.shape[:2]
-
-                    result = select_ball(boxes, src_w, src_h, preferred_obj_id=selected_obj_id, frame_idx=frame_idx)
-
-                    if result is not None:
-                        selected_obj_id = result.obj_id
-                        sx, sy = smoother.update(result.center_x, result.center_y)
-                        frames_since_lost = 0
-                    else:
-                        sx, sy = smoother.update(None, None)
-                        frames_since_lost += 1
-                        # Re-evaluate heuristic after 3 seconds of loss
-                        if frames_since_lost > fps_for_loss * 3:
-                            selected_obj_id = None
-                            frames_since_lost = 0
-
-                    crop = calculate_crop(sx, sy, src_w, src_h)
-
-                    if writer is None:
-                        cap_temp = cv2.VideoCapture(source)
-                        fps_for_loss = cap_temp.get(cv2.CAP_PROP_FPS) or 30.0
-                        cap_temp.release()
-                        writer = VideoWriter(output, fps_for_loss, crop.width, crop.height)
-
-                    cropped = crop.apply(orig_frame)
-                    writer.write(cropped)
-
-                break  # Normal completion
-
-            except (cv2.error, ConnectionError, OSError) as e:
-                retries += 1
-                if retries > max_retries:
-                    logger.warning("Stream disconnected after %d retries. Finalizing output.", max_retries)
-                    break
-                logger.warning("Stream error (attempt %d/%d): %s. Retrying in 1s...", retries, max_retries, e)
-                time.sleep(1)
-
-    finally:
-        if writer is not None:
-            writer.release()
-
-    if writer is None:
-        raise RuntimeError("No frames received from stream")
-
-    logger.info(f"Stream output written to {output}")
