@@ -14,7 +14,7 @@ class MomentumTracker:
         clip_duration_seconds: float,
         fps: float,
         history_size: int = 5,
-        radius_scale: float = 4.0,
+        radius_scale: float = 2.0,
     ) -> None:
         clamped_duration = max(clip_duration_seconds, 1.0)
         k = -math.log(0.05) / clamped_duration
@@ -43,7 +43,7 @@ class MomentumTracker:
 
     def accept(self, candidate: tuple[float, float], ball_size: float) -> bool:
         """Check if a candidate detection is within the velocity-scaled acceptance radius."""
-        min_radius = 2.0 * ball_size
+        min_radius = 1.5 * ball_size
         radius = max(min_radius, self.speed * self._radius_scale)
         dx = candidate[0] - self._predicted_x
         dy = candidate[1] - self._predicted_y

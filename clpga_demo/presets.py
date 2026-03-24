@@ -13,7 +13,7 @@ SHOT_PRESETS: dict[str, dict] = {
         "confidence": 0.15,
         "text": ["golf ball on green"],
         "momentum_history_size": 5,
-        "momentum_radius_scale": 4.0,
+        "momentum_radius_scale": 2.0,
     },
 }
 

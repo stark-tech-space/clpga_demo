@@ -119,18 +119,18 @@ class TestAcceptance:
         mt.update((100.0, 100.0))
         mt.update((110.0, 100.0))  # vx=10, speed=10
         mt.predict()
-        # radius = max(2*10, 10*4.0) = 40; candidate at 500 px away
+        # radius = max(1.5*10, 10*2.0) = 20; candidate at 500 px away
         assert mt.accept((500.0, 500.0), ball_size=10.0) is False
 
     def test_stationary_ball_uses_min_radius(self):
-        """Near-zero speed should fall back to min_radius = 2 * ball_size."""
+        """Near-zero speed should fall back to min_radius = 1.5 * ball_size."""
         mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
         mt.update((100.0, 100.0))
         mt.update((100.0, 100.0))  # velocity = 0
-        # min_radius = 2 * 15 = 30; candidate 25px away should be accepted
-        assert mt.accept((125.0, 100.0), ball_size=15.0) is True
-        # candidate 35px away should be rejected
-        assert mt.accept((135.0, 100.0), ball_size=15.0) is False
+        # min_radius = 1.5 * 15 = 22.5; candidate 20px away should be accepted
+        assert mt.accept((120.0, 100.0), ball_size=15.0) is True
+        # candidate 25px away should be rejected
+        assert mt.accept((125.0, 100.0), ball_size=15.0) is False
 
     def test_faster_ball_wider_radius(self):
         """Higher speed should produce a wider acceptance radius."""

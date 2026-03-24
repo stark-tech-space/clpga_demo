@@ -17,7 +17,7 @@ class TestGetPreset:
         assert preset["confidence"] == 0.15
         assert preset["text"] == ["golf ball on green"]
         assert preset["momentum_history_size"] == 5
-        assert preset["momentum_radius_scale"] == 4.0
+        assert preset["momentum_radius_scale"] == 2.0
         assert "smoothing_alpha" not in preset
 
     def test_raises_on_unknown_preset(self):

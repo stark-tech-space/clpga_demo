@@ -73,7 +73,7 @@ class TestResolveArgs:
         assert resolved["confidence"] == 0.15
         assert resolved["text"] == ["golf ball on green"]
         assert resolved["momentum_history_size"] == 5
-        assert resolved["momentum_radius_scale"] == 4.0
+        assert resolved["momentum_radius_scale"] == 2.0
 
     def test_cli_override_beats_preset(self):
         parser = build_parser()
