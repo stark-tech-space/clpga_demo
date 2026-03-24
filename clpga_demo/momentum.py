@@ -221,3 +221,32 @@ class KalmanBallTracker:
     @property
     def has_position(self) -> bool:
         return self._initialized
+
+
+def create_tracker(
+    tracker_type: str,
+    *,
+    clip_duration_seconds: float = 1.0,
+    fps: float = 30.0,
+    momentum_history_size: int = 5,
+    momentum_radius_scale: float = 4.0,
+    kalman_process_noise: float = 1.0,
+    kalman_measurement_noise: float = 1.0,
+    kalman_gate_threshold: float = 9.0,
+) -> BallTracker:
+    """Create a ball tracker by type name."""
+    if tracker_type == "momentum":
+        return MomentumTracker(
+            clip_duration_seconds=clip_duration_seconds,
+            fps=fps,
+            history_size=momentum_history_size,
+            radius_scale=momentum_radius_scale,
+        )
+    elif tracker_type == "kalman":
+        return KalmanBallTracker(
+            process_noise=kalman_process_noise,
+            measurement_noise=kalman_measurement_noise,
+            gate_threshold=kalman_gate_threshold,
+        )
+    else:
+        raise ValueError(f"Unknown tracker type: {tracker_type!r}. Available: 'momentum', 'kalman'")

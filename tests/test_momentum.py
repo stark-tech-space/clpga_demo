@@ -1,6 +1,6 @@
 import math
 import pytest
-from clpga_demo.momentum import MomentumTracker, KalmanBallTracker
+from clpga_demo.momentum import MomentumTracker, KalmanBallTracker, create_tracker
 
 
 class TestVelocityEstimation:
@@ -328,3 +328,35 @@ class TestKalmanBlending:
         assert result[1] != pytest.approx(210.0, abs=0.1)
         assert 235.0 < result[0] < 255.0
         assert 195.0 < result[1] < 215.0
+
+
+class TestCreateTracker:
+    def test_creates_momentum_tracker(self):
+        tracker = create_tracker(
+            "momentum", clip_duration_seconds=10.0, fps=30.0,
+        )
+        assert isinstance(tracker, MomentumTracker)
+
+    def test_creates_kalman_tracker(self):
+        tracker = create_tracker("kalman")
+        assert isinstance(tracker, KalmanBallTracker)
+
+    def test_raises_on_unknown_type(self):
+        with pytest.raises(ValueError, match="Unknown tracker"):
+            create_tracker("unknown")
+
+    def test_passes_momentum_params(self):
+        tracker = create_tracker(
+            "momentum", clip_duration_seconds=5.0, fps=60.0,
+            momentum_history_size=3, momentum_radius_scale=6.0,
+        )
+        assert isinstance(tracker, MomentumTracker)
+        assert tracker._history.maxlen == 3
+
+    def test_passes_kalman_params(self):
+        tracker = create_tracker(
+            "kalman", kalman_process_noise=2.0,
+            kalman_measurement_noise=3.0, kalman_gate_threshold=16.0,
+        )
+        assert isinstance(tracker, KalmanBallTracker)
+        assert tracker._gate_threshold == 16.0
