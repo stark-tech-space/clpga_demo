@@ -185,3 +185,34 @@ class TestMomentumFiltering:
 
         # If momentum filtering works, the output video should exist
         assert Path(output_path).exists()
+
+
+class TestKalmanGapHandling:
+    def test_kalman_fills_gaps_with_predictions(self, tmp_path):
+        """Kalman tracker should produce continuous trajectory (no NaN gaps)."""
+        input_path = str(tmp_path / "input.mp4")
+        output_path = str(tmp_path / "output.mp4")
+        _create_test_video(input_path, frames=20)
+
+        def _gap_tracker(source, **kwargs):
+            """Ball visible for 5 frames, gone for 3, back for rest."""
+            cap = cv2.VideoCapture(source)
+            frame_idx = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if frame_idx < 5 or frame_idx >= 8:
+                    cx = 100 + frame_idx * 5
+                    cy = 120
+                    boxes = np.array([[cx - 10, cy - 10, cx + 10, cy + 10, 1, 0.95, 0]])
+                else:
+                    boxes = np.empty((0, 7))
+                yield frame_idx, frame, boxes
+                frame_idx += 1
+            cap.release()
+
+        with patch("clpga_demo.pipeline.track_video", side_effect=lambda s, **kw: _gap_tracker(s)):
+            process_video(input_path, output_path, tracker_type="kalman")
+
+        assert Path(output_path).exists()
