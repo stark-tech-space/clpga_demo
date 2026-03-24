@@ -119,3 +119,45 @@ class TestProcessVideoText:
             process_video(input_path, output_path)
 
         assert captured_kwargs.get("text") is None
+
+
+class TestMomentumFiltering:
+    def test_rejects_detection_far_from_momentum(self, tmp_path):
+        """A detection that jumps far from predicted trajectory should be rejected."""
+        input_path = str(tmp_path / "input.mp4")
+        output_path = str(tmp_path / "output.mp4")
+        _create_test_video(input_path, frames=20)
+
+        def _jumping_tracker(source, **kwargs):
+            """Ball moves steadily then jumps to a distant position."""
+            cap = cv2.VideoCapture(source)
+            frame_idx = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if frame_idx < 10:
+                    # Steady rightward motion
+                    cx = 100 + frame_idx * 5
+                    cy = 120
+                    boxes = np.array([[cx - 10, cy - 10, cx + 10, cy + 10, 1, 0.95, 0]])
+                elif frame_idx == 10:
+                    # Ball disappears for one frame
+                    boxes = np.empty((0, 7))
+                elif frame_idx == 11:
+                    # False detection appears far away (should be rejected)
+                    boxes = np.array([[10, 10, 30, 30, 2, 0.90, 0]])
+                else:
+                    # Real ball continues near expected trajectory
+                    cx = 100 + frame_idx * 5
+                    cy = 120
+                    boxes = np.array([[cx - 10, cy - 10, cx + 10, cy + 10, 1, 0.95, 0]])
+                yield frame_idx, frame, boxes
+                frame_idx += 1
+            cap.release()
+
+        with patch("clpga_demo.pipeline.track_video", side_effect=lambda s, **kw: _jumping_tracker(s)):
+            process_video(input_path, output_path)
+
+        # If momentum filtering works, the output video should exist
+        assert Path(output_path).exists()

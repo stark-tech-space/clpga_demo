@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from clpga_demo.cropper import VideoWriter, calculate_crop
+from clpga_demo.momentum import MomentumTracker
 from clpga_demo.smoother import GaussianSmoother
 from clpga_demo.tracker import select_ball, track_video
 
@@ -22,37 +23,78 @@ def process_video(
     confidence: float = 0.25,
     smoothing_sigma_seconds: float = 0.5,
     text: list[str] | None = None,
+    momentum_history_size: int = 5,
+    momentum_radius_scale: float = 4.0,
 ) -> None:
     """Process a pre-recorded video: track ball, smooth trajectory, crop portrait.
 
     Two-pass pipeline:
-      Pass 1 — collect all ball positions from SAM3 tracking.
+      Pass 1 — collect all ball positions from SAM3 tracking with momentum filtering.
       Pass 2 — smooth positions, re-read video, write cropped output.
     """
     if not Path(source).exists():
         raise ValueError(f"Input video does not exist: {source}")
 
-    # --- Pass 1: Collect positions ---
-    positions: list[tuple[float, float] | None] = []
-    selected_obj_id: int | None = None
-
+    # --- Get video properties ---
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
         raise ValueError(f"Cannot open video: {source}")
     fps = cap.get(cv2.CAP_PROP_FPS)
     src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
+
+    clip_duration = frame_count / fps if fps > 0 else 1.0
+    momentum = MomentumTracker(
+        clip_duration_seconds=clip_duration,
+        fps=fps,
+        history_size=momentum_history_size,
+        radius_scale=momentum_radius_scale,
+    )
+
+    # --- Pass 1: Collect positions with momentum filtering ---
+    positions: list[tuple[float, float] | None] = []
+    selected_obj_id: int | None = None
+    frames_since_lost = 0
 
     for frame_idx, orig_frame, boxes in track_video(source, model=model, confidence=confidence, text=text):
         result = select_ball(boxes, src_w, src_h, preferred_obj_id=selected_obj_id, frame_idx=frame_idx)
+
+        accepted = False
         if result is not None:
+            if frames_since_lost > 0 and momentum.is_tracking:
+                # Re-acquisition: check proximity to momentum prediction
+                ball_w = result.bbox[2] - result.bbox[0]
+                ball_h = result.bbox[3] - result.bbox[1]
+                ball_size = (ball_w + ball_h) / 2
+                if not momentum.accept((result.center_x, result.center_y), ball_size):
+                    logger.debug(
+                        "Frame %d: rejected detection obj_id=%d — too far from momentum prediction",
+                        frame_idx, result.obj_id,
+                    )
+                    result = None  # Treat as no detection
+                else:
+                    accepted = True
+            else:
+                accepted = True
+
+        if accepted and result is not None:
             if selected_obj_id is None:
                 selected_obj_id = result.obj_id
                 logger.info(f"Selected ball obj_id={result.obj_id} at frame {frame_idx}")
+            momentum.update((result.center_x, result.center_y))
             positions.append((result.center_x, result.center_y))
+            frames_since_lost = 0
         else:
+            if momentum.has_position:
+                momentum.predict()
             positions.append(None)
+            frames_since_lost += 1
+            if fps > 0 and frames_since_lost > fps * 3:
+                selected_obj_id = None
+                momentum.reset()
+                frames_since_lost = 0
 
     if all(p is None for p in positions):
         raise RuntimeError("No golf ball detected in video")
