@@ -33,6 +33,14 @@ class MomentumTracker:
         self._predicted_x = position[0]
         self._predicted_y = position[1]
 
+    def predict(self) -> tuple[float, float]:
+        """Advance one frame during occlusion. Returns predicted position with decayed velocity."""
+        self._vx *= self._per_frame_decay
+        self._vy *= self._per_frame_decay
+        self._predicted_x += self._vx
+        self._predicted_y += self._vy
+        return (self._predicted_x, self._predicted_y)
+
     def _recompute_velocity(self) -> None:
         """Recompute velocity from position history using linear-weighted deltas."""
         if len(self._history) < 2:
