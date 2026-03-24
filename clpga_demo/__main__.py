@@ -13,14 +13,14 @@ def build_parser() -> argparse.ArgumentParser:
         prog="clpga-demo",
         description="Track a golf ball in video and output a 9:16 portrait crop.",
     )
-    parser.add_argument("source", help="Input video file or RTSP stream URL")
+    parser.add_argument("source", help="Input video file")
     parser.add_argument("-o", "--output", required=True, help="Output video file path")
-    parser.add_argument("--live", action="store_true", help="Treat source as a live stream (EMA smoothing)")
     parser.add_argument("--preset", default="default", help="Shot preset: default, putt (default: default)")
-    parser.add_argument("--smoothing-sigma", type=float, default=None, help="Gaussian sigma in seconds (file mode)")
-    parser.add_argument("--smoothing-alpha", type=float, default=None, help="EMA alpha (live mode)")
+    parser.add_argument("--smoothing-sigma", type=float, default=None, help="Gaussian sigma in seconds")
     parser.add_argument("--model", default="sam3.pt", help="SAM3 model path (default: sam3.pt)")
     parser.add_argument("--confidence", type=float, default=None, help="Detection confidence threshold")
+    parser.add_argument("--momentum-history", type=int, default=None, help="Momentum tracker history size")
+    parser.add_argument("--momentum-radius", type=float, default=None, help="Momentum acceptance radius scale factor")
     return parser
 
 
@@ -32,8 +32,9 @@ def resolve_args(args: argparse.Namespace) -> dict:
 
     cli_to_preset = {
         "smoothing_sigma": "smoothing_sigma_seconds",
-        "smoothing_alpha": "smoothing_alpha",
         "confidence": "confidence",
+        "momentum_history": "momentum_history_size",
+        "momentum_radius": "momentum_radius_scale",
     }
 
     for cli_key, preset_key in cli_to_preset.items():
@@ -51,27 +52,19 @@ def main() -> None:
     args = parser.parse_args()
     resolved = resolve_args(args)
 
-    from clpga_demo.pipeline import process_stream, process_video
+    from clpga_demo.pipeline import process_video
 
     try:
-        if args.live:
-            process_stream(
-                source=args.source,
-                output=args.output,
-                model=args.model,
-                confidence=resolved["confidence"],
-                smoothing_alpha=resolved["smoothing_alpha"],
-                text=resolved["text"],
-            )
-        else:
-            process_video(
-                source=args.source,
-                output=args.output,
-                model=args.model,
-                confidence=resolved["confidence"],
-                smoothing_sigma_seconds=resolved["smoothing_sigma_seconds"],
-                text=resolved["text"],
-            )
+        process_video(
+            source=args.source,
+            output=args.output,
+            model=args.model,
+            confidence=resolved["confidence"],
+            smoothing_sigma_seconds=resolved["smoothing_sigma_seconds"],
+            text=resolved["text"],
+            momentum_history_size=resolved.get("momentum_history_size", 5),
+            momentum_radius_scale=resolved.get("momentum_radius_scale", 4.0),
+        )
     except (ValueError, RuntimeError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

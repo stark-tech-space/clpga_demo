@@ -8,13 +8,6 @@ class TestCLIParser:
         args = parser.parse_args(["input.mp4", "-o", "output.mp4"])
         assert args.source == "input.mp4"
         assert args.output == "output.mp4"
-        assert args.live is False
-
-    def test_live_flag(self):
-        """--live flag should be parsed."""
-        parser = build_parser()
-        args = parser.parse_args(["rtsp://cam/stream", "-o", "out.mp4", "--live"])
-        assert args.live is True
 
     def test_all_options(self):
         """All optional arguments should be parsed correctly."""
@@ -22,23 +15,33 @@ class TestCLIParser:
         args = parser.parse_args([
             "input.mp4", "-o", "output.mp4",
             "--smoothing-sigma", "1.0",
-            "--smoothing-alpha", "0.2",
             "--model", "sam3-large.pt",
             "--confidence", "0.5",
+            "--momentum-history", "3",
+            "--momentum-radius", "6.0",
         ])
         assert args.smoothing_sigma == 1.0
-        assert args.smoothing_alpha == 0.2
         assert args.model == "sam3-large.pt"
         assert args.confidence == 0.5
+        assert args.momentum_history == 3
+        assert args.momentum_radius == 6.0
 
     def test_defaults(self):
         """Default values should be None (presets supply real defaults)."""
         parser = build_parser()
         args = parser.parse_args(["in.mp4", "-o", "out.mp4"])
         assert args.smoothing_sigma is None
-        assert args.smoothing_alpha is None
         assert args.model == "sam3.pt"
         assert args.confidence is None
+        assert args.momentum_history is None
+        assert args.momentum_radius is None
+
+    def test_no_live_flag(self):
+        """--live flag should no longer exist."""
+        import pytest
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["in.mp4", "-o", "out.mp4", "--live"])
 
 
 class TestPresetArg:
@@ -71,7 +74,6 @@ class TestResolveArgs:
         assert resolved["text"] == ["golf ball on green"]
         assert resolved["momentum_history_size"] == 5
         assert resolved["momentum_radius_scale"] == 4.0
-        assert "smoothing_alpha" not in resolved
 
     def test_cli_override_beats_preset(self):
         parser = build_parser()
@@ -79,7 +81,16 @@ class TestResolveArgs:
         resolved = resolve_args(args)
         assert resolved["smoothing_sigma_seconds"] == 0.3
         assert resolved["confidence"] == 0.15
-        assert resolved["text"] == ["golf ball on green"]
+
+    def test_momentum_override(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "in.mp4", "-o", "out.mp4", "--preset", "putt",
+            "--momentum-history", "3", "--momentum-radius", "6.0",
+        ])
+        resolved = resolve_args(args)
+        assert resolved["momentum_history_size"] == 3
+        assert resolved["momentum_radius_scale"] == 6.0
 
     def test_confidence_override(self):
         parser = build_parser()
