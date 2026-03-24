@@ -166,3 +166,25 @@ class TestReset:
         mt.reset()
         mt.update((500.0, 500.0))
         assert mt.velocity == (0.0, 0.0)
+
+
+class TestMomentumTrackerProtocol:
+    def test_update_returns_position(self):
+        """update() should return the input position (pass-through)."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        result = mt.update((100.0, 200.0))
+        assert result == (100.0, 200.0)
+
+    def test_update_returns_each_position(self):
+        """update() should return whichever position was passed in."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        r1 = mt.update((10.0, 20.0))
+        r2 = mt.update((30.0, 40.0))
+        assert r1 == (10.0, 20.0)
+        assert r2 == (30.0, 40.0)
+
+    def test_momentum_conforms_to_protocol(self):
+        """MomentumTracker should satisfy the BallTracker protocol."""
+        from clpga_demo.momentum import BallTracker
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        assert isinstance(mt, BallTracker)

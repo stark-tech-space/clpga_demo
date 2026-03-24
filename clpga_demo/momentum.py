@@ -4,6 +4,21 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class BallTracker(Protocol):
+    def update(self, position: tuple[float, float]) -> tuple[float, float]: ...
+    def predict(self) -> tuple[float, float]: ...
+    def accept(self, candidate: tuple[float, float], ball_size: float) -> bool: ...
+    def reset(self) -> None: ...
+    @property
+    def velocity(self) -> tuple[float, float]: ...
+    @property
+    def speed(self) -> float: ...
+    @property
+    def has_position(self) -> bool: ...
 
 
 class MomentumTracker:
@@ -26,12 +41,13 @@ class MomentumTracker:
         self._predicted_x: float = 0.0
         self._predicted_y: float = 0.0
 
-    def update(self, position: tuple[float, float]) -> None:
+    def update(self, position: tuple[float, float]) -> tuple[float, float]:
         """Feed a confirmed detection. Appends to history and recomputes velocity."""
         self._history.append(position)
         self._recompute_velocity()
         self._predicted_x = position[0]
         self._predicted_y = position[1]
+        return position
 
     def predict(self) -> tuple[float, float]:
         """Advance one frame during occlusion. Returns predicted position with decayed velocity."""
