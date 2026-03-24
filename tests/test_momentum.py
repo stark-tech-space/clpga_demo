@@ -246,3 +246,85 @@ class TestKalmanPredict:
         result = kt.predict()
         assert isinstance(result, tuple)
         assert len(result) == 2
+
+
+class TestKalmanGating:
+    def test_accept_near_prediction(self):
+        """Candidate near predicted position should be accepted."""
+        kt = KalmanBallTracker()
+        for i in range(5):
+            kt.update((100.0 + i * 10.0, 200.0))
+        assert kt.accept((150.0, 200.0), ball_size=10.0) is True
+
+    def test_reject_far_from_prediction(self):
+        """Candidate far from predicted position should be rejected."""
+        kt = KalmanBallTracker()
+        for i in range(5):
+            kt.update((100.0 + i * 10.0, 200.0))
+        assert kt.accept((600.0, 600.0), ball_size=10.0) is False
+
+    def test_gate_widens_with_uncertainty(self):
+        """After more predict() calls (longer gap), gate should be wider."""
+        kt_tight = KalmanBallTracker()
+        for i in range(5):
+            kt_tight.update((100.0 + i * 10.0, 200.0))
+
+        kt_wide = KalmanBallTracker()
+        for i in range(5):
+            kt_wide.update((100.0 + i * 10.0, 200.0))
+
+        # Grow uncertainty in kt_wide by predicting 30 frames
+        for _ in range(30):
+            kt_wide.predict()
+
+        # Candidate 200px off from where the trajectory would be
+        candidate = (350.0, 200.0)
+        assert kt_tight.accept(candidate, ball_size=10.0) is False
+        assert kt_wide.accept(candidate, ball_size=10.0) is True
+
+    def test_accept_before_init_returns_true(self):
+        """Before any update, accept should return True (no basis to reject)."""
+        kt = KalmanBallTracker()
+        assert kt.accept((100.0, 200.0), ball_size=10.0) is True
+
+
+class TestKalmanReset:
+    def test_reset_clears_state(self):
+        kt = KalmanBallTracker()
+        kt.update((100.0, 200.0))
+        kt.update((110.0, 200.0))
+        assert kt.has_position is True
+        assert kt.speed > 0
+        kt.reset()
+        assert kt.has_position is False
+        assert kt.velocity == (0.0, 0.0)
+        assert kt.speed == 0.0
+
+    def test_reset_allows_reinit(self):
+        """After reset, next update should reinitialize."""
+        kt = KalmanBallTracker()
+        kt.update((100.0, 200.0))
+        kt.update((110.0, 200.0))
+        kt.reset()
+        result = kt.update((500.0, 500.0))
+        assert result[0] == pytest.approx(500.0, abs=1.0)
+        assert result[1] == pytest.approx(500.0, abs=1.0)
+
+
+class TestKalmanBlending:
+    def test_smooth_reacquisition(self):
+        """After a gap, re-detection should blend with prediction, not hard-snap."""
+        kt = KalmanBallTracker()
+        for i in range(10):
+            kt.update((100.0 + i * 10.0, 200.0))
+
+        # Single predict step keeps covariance low enough that the Kalman
+        # gain still blends prediction with measurement noticeably.
+        kt.predict()
+
+        result = kt.update((250.0, 210.0))
+
+        assert result[0] != pytest.approx(250.0, abs=0.1)
+        assert result[1] != pytest.approx(210.0, abs=0.1)
+        assert 235.0 < result[0] < 255.0
+        assert 195.0 < result[1] < 215.0
