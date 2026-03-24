@@ -1,6 +1,6 @@
 import math
 import pytest
-from clpga_demo.momentum import MomentumTracker
+from clpga_demo.momentum import MomentumTracker, KalmanBallTracker
 
 
 class TestVelocityEstimation:
@@ -188,3 +188,61 @@ class TestMomentumTrackerProtocol:
         from clpga_demo.momentum import BallTracker
         mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
         assert isinstance(mt, BallTracker)
+
+
+class TestKalmanInit:
+    def test_has_position_false_before_update(self):
+        kt = KalmanBallTracker()
+        assert kt.has_position is False
+
+    def test_velocity_zero_before_update(self):
+        kt = KalmanBallTracker()
+        assert kt.velocity == (0.0, 0.0)
+        assert kt.speed == 0.0
+
+    def test_kalman_conforms_to_protocol(self):
+        from clpga_demo.momentum import BallTracker
+        kt = KalmanBallTracker()
+        assert isinstance(kt, BallTracker)
+
+
+class TestKalmanUpdate:
+    def test_first_update_sets_position(self):
+        kt = KalmanBallTracker()
+        result = kt.update((100.0, 200.0))
+        assert kt.has_position is True
+        assert result[0] == pytest.approx(100.0, abs=1.0)
+        assert result[1] == pytest.approx(200.0, abs=1.0)
+
+    def test_velocity_learned_from_updates(self):
+        kt = KalmanBallTracker()
+        for i in range(10):
+            kt.update((100.0 + i * 10.0, 200.0))
+        vx, vy = kt.velocity
+        assert vx == pytest.approx(10.0, abs=2.0)
+        assert vy == pytest.approx(0.0, abs=2.0)
+
+    def test_update_returns_filtered_position(self):
+        kt = KalmanBallTracker()
+        for i in range(5):
+            kt.update((100.0 + i * 10.0, 200.0))
+        result = kt.update((155.0, 205.0))
+        assert 145.0 < result[0] < 160.0
+        assert 195.0 < result[1] < 210.0
+
+
+class TestKalmanPredict:
+    def test_predict_continues_trajectory(self):
+        kt = KalmanBallTracker()
+        for i in range(5):
+            kt.update((100.0 + i * 10.0, 200.0))
+        px, py = kt.predict()
+        assert px == pytest.approx(150.0, abs=5.0)
+        assert py == pytest.approx(200.0, abs=5.0)
+
+    def test_predict_returns_tuple(self):
+        kt = KalmanBallTracker()
+        kt.update((100.0, 200.0))
+        result = kt.predict()
+        assert isinstance(result, tuple)
+        assert len(result) == 2

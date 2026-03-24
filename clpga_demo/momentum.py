@@ -6,6 +6,8 @@ import math
 from collections import deque
 from typing import Protocol, runtime_checkable
 
+import numpy as np
+
 
 @runtime_checkable
 class BallTracker(Protocol):
@@ -113,3 +115,109 @@ class MomentumTracker:
     def has_position(self) -> bool:
         """True if at least one position has been recorded."""
         return len(self._history) >= 1
+
+
+class KalmanBallTracker:
+    """Constant-velocity Kalman filter for ball tracking with Mahalanobis gating."""
+
+    def __init__(
+        self,
+        process_noise: float = 1.0,
+        measurement_noise: float = 1.0,
+        gate_threshold: float = 9.0,
+    ) -> None:
+        self._gate_threshold = gate_threshold
+        self._initialized = False
+
+        # State: [x, y, vx, vy]
+        self._x = np.zeros(4)
+        # Covariance
+        self._P = np.diag([1.0, 1.0, 100.0, 100.0])
+
+        # Transition matrix (constant velocity, dt=1)
+        self._F = np.array([
+            [1, 0, 1, 0],
+            [0, 1, 0, 1],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+        ], dtype=float)
+
+        # Measurement matrix (observe position only)
+        self._H = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+        ], dtype=float)
+
+        # Process noise Q (independent x/y acceleration)
+        G = np.array([
+            [0.5, 0.0],
+            [0.0, 0.5],
+            [1.0, 0.0],
+            [0.0, 1.0],
+        ])
+        self._Q = (process_noise ** 2) * (G @ G.T)
+
+        # Measurement noise R
+        self._R = (measurement_noise ** 2) * np.eye(2)
+
+    def update(self, position: tuple[float, float]) -> tuple[float, float]:
+        """Predict then correct with measurement. Returns filtered position."""
+        z = np.array(position)
+        if not self._initialized:
+            self._x[:2] = z
+            self._x[2:] = 0.0
+            self._initialized = True
+            return (float(self._x[0]), float(self._x[1]))
+
+        # Predict
+        self._x = self._F @ self._x
+        self._P = self._F @ self._P @ self._F.T + self._Q
+
+        # Correct
+        y = z - self._H @ self._x
+        S = self._H @ self._P @ self._H.T + self._R
+        K = self._P @ self._H.T @ np.linalg.inv(S)
+        self._x = self._x + K @ y
+        I = np.eye(4)
+        self._P = (I - K @ self._H) @ self._P
+
+        return (float(self._x[0]), float(self._x[1]))
+
+    def predict(self) -> tuple[float, float]:
+        """Predict-only step (no measurement). Returns predicted position."""
+        if not self._initialized:
+            return (0.0, 0.0)
+        self._x = self._F @ self._x
+        self._P = self._F @ self._P @ self._F.T + self._Q
+        return (float(self._x[0]), float(self._x[1]))
+
+    def accept(self, candidate: tuple[float, float], ball_size: float) -> bool:
+        """Mahalanobis distance gating. ball_size unused (protocol compat)."""
+        if not self._initialized:
+            return True
+        # Hypothetical prediction (don't modify state)
+        x_pred = self._F @ self._x
+        P_pred = self._F @ self._P @ self._F.T + self._Q
+        z = np.array(candidate)
+        innovation = z - self._H @ x_pred
+        S = self._H @ P_pred @ self._H.T + self._R
+        d_sq = float(innovation @ np.linalg.solve(S, innovation))
+        return d_sq <= self._gate_threshold
+
+    def reset(self) -> None:
+        """Clear all state."""
+        self._initialized = False
+        self._x = np.zeros(4)
+        self._P = np.diag([1.0, 1.0, 100.0, 100.0])
+
+    @property
+    def velocity(self) -> tuple[float, float]:
+        return (float(self._x[2]), float(self._x[3]))
+
+    @property
+    def speed(self) -> float:
+        return float(np.sqrt(self._x[2] ** 2 + self._x[3] ** 2))
+
+    @property
+    def has_position(self) -> bool:
+        return self._initialized
