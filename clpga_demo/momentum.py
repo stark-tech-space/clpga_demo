@@ -41,6 +41,23 @@ class MomentumTracker:
         self._predicted_y += self._vy
         return (self._predicted_x, self._predicted_y)
 
+    def accept(self, candidate: tuple[float, float], ball_size: float) -> bool:
+        """Check if a candidate detection is within the velocity-scaled acceptance radius."""
+        min_radius = 2.0 * ball_size
+        radius = max(min_radius, self.speed * self._radius_scale)
+        dx = candidate[0] - self._predicted_x
+        dy = candidate[1] - self._predicted_y
+        distance = math.sqrt(dx ** 2 + dy ** 2)
+        return distance <= radius
+
+    def reset(self) -> None:
+        """Clear all state — position history, velocity, and predicted position."""
+        self._history.clear()
+        self._vx = 0.0
+        self._vy = 0.0
+        self._predicted_x = 0.0
+        self._predicted_y = 0.0
+
     def _recompute_velocity(self) -> None:
         """Recompute velocity from position history using linear-weighted deltas."""
         if len(self._history) < 2:

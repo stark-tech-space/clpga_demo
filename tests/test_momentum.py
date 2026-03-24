@@ -100,3 +100,69 @@ class TestExponentialDecay:
         result = mt.predict()
         assert isinstance(result, tuple)
         assert len(result) == 2
+
+
+class TestAcceptance:
+    def test_accept_near_prediction(self):
+        """Candidate near predicted position should be accepted."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        mt.update((100.0, 100.0))
+        mt.update((110.0, 100.0))  # vx=10
+        mt.predict()  # predicted ~= (119.97, 100)
+        predicted = (mt._predicted_x, mt._predicted_y)
+        # Candidate right at prediction
+        assert mt.accept((predicted[0], predicted[1]), ball_size=10.0) is True
+
+    def test_reject_far_from_prediction(self):
+        """Candidate far from predicted position should be rejected."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        mt.update((100.0, 100.0))
+        mt.update((110.0, 100.0))  # vx=10, speed=10
+        mt.predict()
+        # radius = max(2*10, 10*4.0) = 40; candidate at 500 px away
+        assert mt.accept((500.0, 500.0), ball_size=10.0) is False
+
+    def test_stationary_ball_uses_min_radius(self):
+        """Near-zero speed should fall back to min_radius = 2 * ball_size."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        mt.update((100.0, 100.0))
+        mt.update((100.0, 100.0))  # velocity = 0
+        # min_radius = 2 * 15 = 30; candidate 25px away should be accepted
+        assert mt.accept((125.0, 100.0), ball_size=15.0) is True
+        # candidate 35px away should be rejected
+        assert mt.accept((135.0, 100.0), ball_size=15.0) is False
+
+    def test_faster_ball_wider_radius(self):
+        """Higher speed should produce a wider acceptance radius."""
+        slow = MomentumTracker(clip_duration_seconds=10.0, fps=30.0, radius_scale=4.0)
+        slow.update((100.0, 100.0))
+        slow.update((105.0, 100.0))  # speed=5, radius=max(20, 5*4)=20
+
+        fast = MomentumTracker(clip_duration_seconds=10.0, fps=30.0, radius_scale=4.0)
+        fast.update((100.0, 100.0))
+        fast.update((130.0, 100.0))  # speed=30, radius=max(20, 30*4)=120
+
+        # 50px offset: slow rejects (radius=20), fast accepts (radius=120)
+        assert slow.accept((155.0, 100.0), ball_size=10.0) is False
+        assert fast.accept((180.0, 100.0), ball_size=10.0) is True
+
+
+class TestReset:
+    def test_reset_clears_velocity(self):
+        """After reset, velocity should be zero."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        mt.update((100.0, 100.0))
+        mt.update((110.0, 100.0))
+        assert mt.speed > 0
+        mt.reset()
+        assert mt.velocity == (0.0, 0.0)
+        assert mt.speed == 0.0
+
+    def test_reset_clears_history(self):
+        """After reset, next update should be like first position."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        mt.update((100.0, 100.0))
+        mt.update((200.0, 200.0))
+        mt.reset()
+        mt.update((500.0, 500.0))
+        assert mt.velocity == (0.0, 0.0)
