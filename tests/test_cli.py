@@ -67,9 +67,11 @@ class TestResolveArgs:
         args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--preset", "putt"])
         resolved = resolve_args(args)
         assert resolved["smoothing_sigma_seconds"] == 0.1
-        assert resolved["smoothing_alpha"] == 0.4
         assert resolved["confidence"] == 0.15
         assert resolved["text"] == ["golf ball on green"]
+        assert resolved["momentum_history_size"] == 5
+        assert resolved["momentum_radius_scale"] == 4.0
+        assert "smoothing_alpha" not in resolved
 
     def test_cli_override_beats_preset(self):
         parser = build_parser()

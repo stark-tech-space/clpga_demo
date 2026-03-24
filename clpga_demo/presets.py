@@ -5,15 +5,15 @@ from __future__ import annotations
 SHOT_PRESETS: dict[str, dict] = {
     "default": {
         "smoothing_sigma_seconds": 0.5,
-        "smoothing_alpha": 0.15,
         "confidence": 0.25,
         "text": ["golf ball"],
     },
     "putt": {
         "smoothing_sigma_seconds": 0.1,
-        "smoothing_alpha": 0.4,
         "confidence": 0.15,
         "text": ["golf ball on green"],
+        "momentum_history_size": 5,
+        "momentum_radius_scale": 4.0,
     },
 }
 
