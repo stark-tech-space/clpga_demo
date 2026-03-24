@@ -121,6 +121,30 @@ class TestProcessVideoText:
         assert captured_kwargs.get("text") is None
 
 
+class TestTrackerType:
+    def test_default_tracker_is_momentum(self, tmp_path):
+        """Default tracker_type should work (momentum)."""
+        input_path = str(tmp_path / "input.mp4")
+        output_path = str(tmp_path / "output.mp4")
+        _create_test_video(input_path)
+
+        with patch("clpga_demo.pipeline.track_video", side_effect=lambda s, **kw: _mock_track_video(s)):
+            process_video(input_path, output_path, tracker_type="momentum")
+
+        assert Path(output_path).exists()
+
+    def test_kalman_tracker_creates_output(self, tmp_path):
+        """Kalman tracker should also produce output video."""
+        input_path = str(tmp_path / "input.mp4")
+        output_path = str(tmp_path / "output.mp4")
+        _create_test_video(input_path)
+
+        with patch("clpga_demo.pipeline.track_video", side_effect=lambda s, **kw: _mock_track_video(s)):
+            process_video(input_path, output_path, tracker_type="kalman")
+
+        assert Path(output_path).exists()
+
+
 class TestMomentumFiltering:
     def test_rejects_detection_far_from_momentum(self, tmp_path):
         """A detection that jumps far from predicted trajectory should be rejected."""

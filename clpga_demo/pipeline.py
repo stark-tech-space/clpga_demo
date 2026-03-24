@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from clpga_demo.cropper import VideoWriter, calculate_crop
-from clpga_demo.momentum import MomentumTracker
+from clpga_demo.momentum import create_tracker
 from clpga_demo.smoother import GaussianSmoother
 from clpga_demo.tracker import select_ball, track_video
 
@@ -23,8 +23,12 @@ def process_video(
     confidence: float = 0.25,
     smoothing_sigma_seconds: float = 0.5,
     text: list[str] | None = None,
+    tracker_type: str = "momentum",
     momentum_history_size: int = 5,
     momentum_radius_scale: float = 4.0,
+    kalman_process_noise: float = 1.0,
+    kalman_measurement_noise: float = 1.0,
+    kalman_gate_threshold: float = 9.0,
 ) -> None:
     """Process a pre-recorded video: track ball, smooth trajectory, crop portrait.
 
@@ -46,11 +50,15 @@ def process_video(
     cap.release()
 
     clip_duration = frame_count / fps if fps > 0 else 1.0
-    momentum = MomentumTracker(
+    tracker = create_tracker(
+        tracker_type,
         clip_duration_seconds=clip_duration,
         fps=fps,
-        history_size=momentum_history_size,
-        radius_scale=momentum_radius_scale,
+        momentum_history_size=momentum_history_size,
+        momentum_radius_scale=momentum_radius_scale,
+        kalman_process_noise=kalman_process_noise,
+        kalman_measurement_noise=kalman_measurement_noise,
+        kalman_gate_threshold=kalman_gate_threshold,
     )
 
     # --- Pass 1: Collect positions with momentum filtering ---
@@ -63,14 +71,14 @@ def process_video(
 
         accepted = False
         if result is not None:
-            if frames_since_lost > 0 and momentum.is_tracking:
-                # Re-acquisition: check proximity to momentum prediction
+            if frames_since_lost > 0 and tracker.has_position:
+                # Re-acquisition: check proximity to tracker prediction
                 ball_w = result.bbox[2] - result.bbox[0]
                 ball_h = result.bbox[3] - result.bbox[1]
                 ball_size = (ball_w + ball_h) / 2
-                if not momentum.accept((result.center_x, result.center_y), ball_size):
+                if not tracker.accept((result.center_x, result.center_y), ball_size):
                     logger.debug(
-                        "Frame %d: rejected detection obj_id=%d — too far from momentum prediction",
+                        "Frame %d: rejected detection obj_id=%d — too far from tracker prediction",
                         frame_idx, result.obj_id,
                     )
                     result = None  # Treat as no detection
@@ -83,17 +91,19 @@ def process_video(
             if selected_obj_id is None:
                 selected_obj_id = result.obj_id
                 logger.info(f"Selected ball obj_id={result.obj_id} at frame {frame_idx}")
-            momentum.update((result.center_x, result.center_y))
-            positions.append((result.center_x, result.center_y))
+            pos = tracker.update((result.center_x, result.center_y))
+            positions.append(pos)
             frames_since_lost = 0
         else:
-            if momentum.has_position:
-                momentum.predict()
-            positions.append(None)
+            if tracker.has_position:
+                pos = tracker.predict()
+                positions.append(pos)
+            else:
+                positions.append(None)
             frames_since_lost += 1
             if fps > 0 and frames_since_lost > fps * 3:
                 selected_obj_id = None
-                momentum.reset()
+                tracker.reset()
                 frames_since_lost = 0
 
     if all(p is None for p in positions):
