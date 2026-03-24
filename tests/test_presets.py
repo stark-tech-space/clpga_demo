@@ -28,3 +28,19 @@ class TestGetPreset:
         preset = get_preset("default")
         preset["confidence"] = 999
         assert get_preset("default")["confidence"] == 0.25
+
+
+class TestTrackerPresets:
+    def test_default_has_tracker_type(self):
+        preset = get_preset("default")
+        assert preset["tracker_type"] == "momentum"
+
+    def test_putt_has_tracker_type(self):
+        preset = get_preset("putt")
+        assert preset["tracker_type"] == "momentum"
+
+    def test_putt_has_kalman_params(self):
+        preset = get_preset("putt")
+        assert preset["kalman_process_noise"] == 0.5
+        assert preset["kalman_measurement_noise"] == 1.0
+        assert preset["kalman_gate_threshold"] == 9.0

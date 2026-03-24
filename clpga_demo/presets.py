@@ -7,13 +7,18 @@ SHOT_PRESETS: dict[str, dict] = {
         "smoothing_sigma_seconds": 0.5,
         "confidence": 0.25,
         "text": ["golf ball"],
+        "tracker_type": "momentum",
     },
     "putt": {
         "smoothing_sigma_seconds": 0.1,
         "confidence": 0.15,
         "text": ["golf ball on green"],
+        "tracker_type": "momentum",
         "momentum_history_size": 5,
         "momentum_radius_scale": 2.0,
+        "kalman_process_noise": 0.5,
+        "kalman_measurement_noise": 1.0,
+        "kalman_gate_threshold": 9.0,
     },
 }
 
