@@ -186,13 +186,13 @@ Remove:
 
 Add:
 - `--momentum-history` (int, default None) — overrides `momentum_history_size` from preset
-- `--momentum-radius-scale` (float, default None) — overrides `momentum_radius_scale` from preset
+- `--momentum-radius` (float, default None) — overrides `momentum_radius_scale` from preset
 
 ### Updated `resolve_args()`
 
 Add mappings:
 - `"momentum_history"` → `"momentum_history_size"`
-- `"momentum_radius_scale"` → `"momentum_radius_scale"`
+- `"momentum_radius"` → `"momentum_radius_scale"`
 
 ### Updated `main()`
 
