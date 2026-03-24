@@ -16,6 +16,7 @@ Enhance the golf ball tracker to predict ball trajectory during detection gaps u
 - Modified Pass 1 of `process_video` to use momentum-based proximity filtering
 - Removal of live stream pipeline (`process_stream`, `EMASmoother`, `--live` CLI flag)
 - Updated presets (remove `smoothing_alpha`, add momentum parameters to `putt`)
+- Updated CLI (`__main__.py`) to remove live-stream flags and add momentum parameters
 - Unit tests for `MomentumTracker`
 
 ### Out of scope
@@ -30,23 +31,27 @@ Enhance the golf ball tracker to predict ball trajectory during detection gaps u
 
 A stateful `MomentumTracker` class used during Pass 1 to estimate velocity, predict position during occlusion, and filter re-detections by proximity.
 
+#### Units
+
+All velocities are in **pixels/frame**. This is the natural unit since velocity is computed from frame-to-frame position deltas. The acceptance radius (`speed * radius_scale_factor`) is therefore in pixels, where `radius_scale_factor` represents how many frames of travel to allow as uncertainty.
+
 #### State
 
-- **Position history:** Rolling buffer of last `history_size` (default 5) confirmed positions for velocity estimation
-- **Current velocity:** `(vx, vy)` computed as weighted average of recent frame-to-frame deltas (more recent frames weighted higher)
-- **Decay rate:** Exponential decay constant `k = -ln(0.05) / clip_duration_seconds` — velocity reaches 5% of initial by the end of the clip
-- **Frames since lost:** Counter tracking how long the ball has been missing
+- **Position history:** Rolling buffer of last `history_size` (default 5) confirmed real detection positions for velocity estimation. Not modified during occlusion — only `update()` appends to it.
+- **Current velocity:** `(vx, vy)` in px/frame, computed as weighted average of recent frame-to-frame deltas
+- **Per-frame decay factor:** `exp(-k / fps)` where `k = -ln(0.05) / clip_duration_seconds`, computed once at init
 - **Predicted position:** Extrapolated from last known position + decaying velocity, advanced each lost frame
 
 #### Interface
 
 ```python
 class MomentumTracker:
-    def __init__(self, clip_duration_seconds: float, fps: float, history_size: int = 5):
+    def __init__(self, clip_duration_seconds: float, fps: float, history_size: int = 5,
+                 radius_scale: float = 4.0):
         ...
 
     def update(self, position: tuple[float, float]) -> None:
-        """Feed a confirmed detection. Updates velocity estimate."""
+        """Feed a confirmed detection. Appends to position history and recomputes velocity."""
 
     def predict(self) -> tuple[float, float]:
         """Advance one frame during occlusion. Returns predicted position with decayed velocity."""
@@ -54,30 +59,56 @@ class MomentumTracker:
     def accept(self, candidate: tuple[float, float], ball_size: float) -> bool:
         """Check if a candidate detection is within the velocity-scaled acceptance radius."""
 
+    def reset(self) -> None:
+        """Clear all state — position history, velocity, and predicted position."""
+
     @property
     def velocity(self) -> tuple[float, float]:
-        """Current estimated velocity (vx, vy)."""
+        """Current estimated velocity (vx, vy) in px/frame."""
 
     @property
     def speed(self) -> float:
-        """Current speed magnitude."""
+        """Current speed magnitude in px/frame."""
 ```
 
 #### Velocity estimation
 
-Velocity is computed from the rolling position history as a weighted average of frame-to-frame deltas. More recent deltas are weighted higher to respond to trajectory changes. With `history_size=5`, this uses up to 4 consecutive deltas.
+Velocity is computed from the rolling position history as a linearly weighted average of frame-to-frame deltas. Weights are `[1, 2, ..., n]` normalized to sum to 1, where the most recent delta gets weight `n`. With `history_size=5`, this uses up to 4 consecutive deltas.
+
+After re-acquisition from a gap, `update()` appends the new real position to the history buffer. Velocity is recomputed from whatever real positions are in the buffer — predicted positions are never stored in the history. This means velocity after re-acquisition reflects actual ball movement, not extrapolation drift.
 
 #### Exponential decay during occlusion
 
-Each frame the ball is lost:
+The per-frame decay factor is computed once at init:
 
+```python
+k = -math.log(0.05) / clip_duration_seconds
+per_frame_decay = math.exp(-k / fps)
 ```
-dt = frames_lost / fps
-velocity *= exp(-k * dt)
-predicted_position += velocity
+
+Each call to `predict()` applies one frame of decay:
+
+```python
+self._vx *= self._per_frame_decay
+self._vy *= self._per_frame_decay
+self._predicted_x += self._vx   # px/frame, one frame step
+self._predicted_y += self._vy
 ```
+
+This produces correct exponential decay because `per_frame_decay^n = exp(-k * n / fps)`.
 
 Where `k = -ln(0.05) / clip_duration_seconds`. This models friction on the green — the ball naturally decelerates toward the hole. The clip duration is used as the tuning reference because putting clips typically end a few seconds after the ball enters the hole.
+
+**Velocity decay over clip duration** (for a 10-second clip):
+
+| Clip % | Time (s) | Velocity % remaining |
+|--------|----------|---------------------|
+| 25%    | 2.5s     | ~47%                |
+| 50%    | 5.0s     | ~22%                |
+| 75%    | 7.5s     | ~10%                |
+| 100%   | 10.0s    | ~5%                 |
+
+**Guard clause:** If `clip_duration_seconds < 1.0`, clamp to 1.0 to prevent extreme decay rates.
 
 #### Velocity-scaled acceptance radius
 
@@ -88,6 +119,7 @@ radius = max(min_radius, speed * radius_scale_factor)
 ```
 
 - `min_radius = 2 * ball_size` — ensures near-stationary balls can still be re-acquired
+- `ball_size` is computed as the average of bbox width and height: `((x2 - x1) + (y2 - y1)) / 2`
 - `radius_scale_factor` — tunable multiplier (default 4.0), represents how many frames of travel to allow as uncertainty
 - Candidate is accepted if `distance(candidate, predicted_position) <= radius`
 
@@ -104,7 +136,7 @@ radius = max(min_radius, speed * radius_scale_factor)
 
 ```
 1. Compute clip_duration = frame_count / fps
-2. Create MomentumTracker(clip_duration, fps)
+2. Create MomentumTracker(clip_duration, fps, history_size, radius_scale)
 3. For each frame:
    a. Get boxes from track_video
    b. If ball detected with preferred obj_id:
@@ -116,10 +148,12 @@ radius = max(min_radius, speed * radius_scale_factor)
    c. If no valid detection:
       - Call predict() to advance momentum state
       - Store None (gap remains NaN for Gaussian interpolation)
-      - If lost > 3 seconds: reset selected_obj_id
+      - If lost > 3 seconds: reset selected_obj_id AND call momentum.reset()
 ```
 
 The momentum `predict()` is called every lost frame to advance internal state, but the predicted position is NOT stored as output — gaps remain `None`/`NaN` for the existing linear interpolation + Gaussian smoothing in Pass 2.
+
+When `selected_obj_id` is reset after prolonged loss, the `MomentumTracker` is also reset — the old velocity history is meaningless for a different ball.
 
 ### Pass 2 unchanged
 
@@ -141,6 +175,41 @@ def process_video(
 ```
 
 Decay rate is derived automatically from clip duration — no user-facing parameter.
+
+## CLI changes
+
+### Updated `build_parser()`
+
+Remove:
+- `--live` flag
+- `--smoothing-alpha` argument
+
+Add:
+- `--momentum-history` (int, default None) — overrides `momentum_history_size` from preset
+- `--momentum-radius-scale` (float, default None) — overrides `momentum_radius_scale` from preset
+
+### Updated `resolve_args()`
+
+Add mappings:
+- `"momentum_history"` → `"momentum_history_size"`
+- `"momentum_radius_scale"` → `"momentum_radius_scale"`
+
+### Updated `main()`
+
+Remove the `if args.live` branch and `process_stream` import. Call `process_video` with the resolved momentum parameters:
+
+```python
+process_video(
+    source=args.source,
+    output=args.output,
+    model=args.model,
+    confidence=resolved["confidence"],
+    smoothing_sigma_seconds=resolved["smoothing_sigma_seconds"],
+    text=resolved["text"],
+    momentum_history_size=resolved.get("momentum_history_size", 5),
+    momentum_radius_scale=resolved.get("momentum_radius_scale", 4.0),
+)
+```
 
 ## Preset changes
 
@@ -172,6 +241,8 @@ Unit tests for `MomentumTracker` in `tests/test_momentum.py`:
 - **Velocity-scaled radius:** Fast ball has wider acceptance radius than slow ball
 - **Stationary ball:** Near-zero velocity → radius falls back to `min_radius`, still accepts nearby detections
 - **History buffer:** Velocity stable when buffer is full vs. partially filled (first few frames)
+- **Reset:** After `reset()`, velocity is zero and history is empty
+- **Short clip guard:** Clip duration < 1.0s is clamped, decay doesn't explode
 
 Existing `GaussianSmoother` tests unchanged. `EMASmoother` tests removed alongside the class.
 
@@ -180,3 +251,4 @@ Existing `GaussianSmoother` tests unchanged. `EMASmoother` tests removed alongsi
 No new error cases introduced. Existing behavior preserved:
 - `MomentumTracker` gracefully handles single-frame history (velocity = 0)
 - If no detections pass the proximity filter, behavior is same as no detections today (NaN gap, linear interpolation)
+- Clip duration clamped to minimum 1.0s to prevent extreme decay rates
