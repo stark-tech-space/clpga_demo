@@ -9,7 +9,7 @@ The current MomentumTracker predicts positions during occlusion but discards tho
 ## Goals
 
 - **Smooth re-acquisition:** Eliminate crop jumps when the ball reappears after a detection gap by blending predictions with measurements via Kalman gain
-- **Continuous trajectory:** Fill gaps with Kalman-predicted positions instead of NaN, giving the Gaussian smoother a smooth input signal
+- **Continuous trajectory:** Fill gaps with predicted positions instead of NaN, giving the Gaussian smoother a smooth input signal
 - **Uncertainty-aware gating:** Replace the fixed-radius acceptance check with Mahalanobis distance gating that automatically widens with prediction uncertainty
 - **A/B comparison:** Keep MomentumTracker intact so both approaches can be tested on the same clips
 
@@ -18,10 +18,12 @@ The current MomentumTracker predicts positions during occlusion but discards tho
 ### In scope
 
 - New `KalmanBallTracker` class in `clpga_demo/momentum.py` alongside existing `MomentumTracker`
-- Common `BallTracker` protocol so pipeline code works with either tracker
-- Modified Pass 1 of `process_video` to accept either tracker and store predicted positions during gaps (for Kalman) or NaN (for Momentum, preserving current behavior)
+- Common `BallTracker` protocol in `clpga_demo/momentum.py` so pipeline code works with either tracker
+- `create_tracker` factory function in `clpga_demo/momentum.py`
+- Minor change to `MomentumTracker.update()`: returns the input position (was `None`) for protocol conformance
+- Modified Pass 1 of `process_video` to use protocol-based tracker interface and store predicted positions during gaps — **this is a behavior change for both trackers** (previously predictions were discarded and gaps stored as NaN)
 - New `--tracker` CLI flag to select `momentum` or `kalman`
-- Updated presets with `tracker` field and Kalman-specific parameters
+- Updated presets with `tracker_type` field and Kalman-specific parameters
 - New unit tests for `KalmanBallTracker` (existing MomentumTracker tests unchanged)
 
 ### Out of scope
@@ -36,7 +38,7 @@ The current MomentumTracker predicts positions during occlusion but discards tho
 
 ### Common protocol
 
-Both trackers implement the same interface so pipeline code doesn't branch on tracker type:
+Both trackers implement the same interface so pipeline code doesn't branch on tracker type. Lives in `clpga_demo/momentum.py`.
 
 ```python
 class BallTracker(Protocol):
@@ -62,12 +64,15 @@ class BallTracker(Protocol):
     def has_position(self) -> bool: ...
 ```
 
+Note: The protocol uses `has_position` (True after 1 update) instead of the existing `is_tracking` (True after 2 updates). This is intentional — after a single detection, both trackers can meaningfully predict (Kalman uses zero velocity, Momentum also has zero velocity from a single position). The `is_tracking` property remains on MomentumTracker but is not part of the protocol.
+
 ### Changes to MomentumTracker
 
 Minimal changes to conform to the protocol:
 
-- `update()` now **returns** the position it was given (pass-through, no filtering)
+- `update()` return type changes from `None` to `tuple[float, float]` — returns the input position unchanged (pass-through, no filtering). This is a signature change; callers must be updated.
 - `accept()` signature unchanged — still takes `ball_size`
+- All other behavior preserved
 
 ### New class: `KalmanBallTracker`
 
@@ -100,14 +105,18 @@ H = [[1, 0, 0, 0],
      [0, 1, 0, 0]]
 ```
 
-**Process noise Q** — discrete white noise acceleration model:
+**Process noise Q** — discrete white noise acceleration model with independent x and y noise:
 
 ```
-G = [[0.5], [0.5], [1.0], [1.0]]
+G = [[0.5, 0.0],
+     [0.0, 0.5],
+     [1.0, 0.0],
+     [0.0, 1.0]]
+
 Q = process_noise^2 * G @ G^T
 ```
 
-Higher `process_noise` = expects more erratic movement, trusts predictions less.
+This produces a 4x4 block-diagonal Q where x and y acceleration noise are independent (no cross-correlation between axes). Higher `process_noise` = expects more erratic movement, trusts predictions less.
 
 **Measurement noise R:**
 
@@ -119,16 +128,29 @@ Higher `measurement_noise` = trusts detections less, more smoothing.
 
 #### Initialization
 
-On first `update()`, state is set directly to `[x, y, 0, 0]` with large initial covariance (P = diag([1, 1, 100, 100])). Velocity is learned from subsequent measurements.
+On first `update()`, state is set directly to `[x, y, 0, 0]` with initial covariance `P = diag([1, 1, 100, 100])`. Position variance of 1 px^2 reflects that the first detection is accurate. Velocity variance of 100 (px/frame)^2 reflects complete uncertainty about initial velocity — the filter learns velocity from subsequent measurements within a few frames.
+
+#### Predict-then-correct cycle
+
+The `update()` method internally performs **both** the predict and correct steps:
+
+1. **Predict:** Apply state transition F to advance one frame, grow covariance by Q
+2. **Correct:** Compute Kalman gain, blend prediction with measurement, shrink covariance
+
+The `predict()` method (called during gaps) only performs step 1.
+
+This means every frame gets exactly one application of the transition matrix F, whether the frame has a detection or not.
 
 #### Mahalanobis distance gating
 
 ```
 innovation = candidate - H @ x_predicted
 S = H @ P_predicted @ H^T + R
-d_squared = innovation^T @ S^-1 @ innovation
+d_squared = innovation^T @ solve(S, innovation)
 accept if d_squared <= gate_threshold
 ```
+
+Uses `np.linalg.solve` rather than explicit matrix inversion for numerical stability. For the 2x2 case this is unlikely to matter, but it's good practice.
 
 The gate automatically widens as uncertainty grows during longer gaps, and tightens when the filter is confident. Default `gate_threshold = 9.0` corresponds to chi-squared with 2 DOF at ~99% confidence.
 
@@ -141,13 +163,13 @@ class KalmanBallTracker:
         ...
 
     def update(self, position: tuple[float, float]) -> tuple[float, float]:
-        """Feed a detection. Returns the filtered (corrected) position."""
+        """Predict, then correct with measurement. Returns filtered position."""
 
     def predict(self) -> tuple[float, float]:
-        """Advance one frame with no measurement. Returns predicted position."""
+        """Predict-only step (no measurement). Returns predicted position."""
 
     def accept(self, candidate: tuple[float, float], ball_size: float) -> bool:
-        """Mahalanobis distance gating. ball_size is accepted but unused (protocol compat)."""
+        """Mahalanobis distance gating. ball_size accepted but unused (protocol compat)."""
 
     def reset(self) -> None:
         """Clear all state."""
@@ -166,6 +188,10 @@ class KalmanBallTracker:
 ```
 
 Note: `accept()` takes `ball_size` for protocol compatibility with MomentumTracker but the Kalman implementation ignores it — it uses Mahalanobis gating from its covariance instead.
+
+#### Performance
+
+The Kalman filter adds 4x4 matrix operations per frame (matrix multiply, solve). This is trivially cheap (~microseconds) compared to the SAM3 inference that dominates each frame.
 
 ### Comparison
 
@@ -188,47 +214,47 @@ New function in `momentum.py`:
 def create_tracker(
     tracker_type: str,
     *,
-    # Momentum params
+    # Momentum params (needed only when tracker_type == "momentum")
     clip_duration_seconds: float = 1.0,
     fps: float = 30.0,
     momentum_history_size: int = 5,
-    momentum_radius_scale: float = 2.0,
-    # Kalman params
+    momentum_radius_scale: float = 4.0,
+    # Kalman params (needed only when tracker_type == "kalman")
     kalman_process_noise: float = 1.0,
     kalman_measurement_noise: float = 1.0,
     kalman_gate_threshold: float = 9.0,
 ) -> BallTracker:
 ```
 
-Returns either `MomentumTracker` or `KalmanBallTracker` based on `tracker_type`.
+Returns either `MomentumTracker` or `KalmanBallTracker` based on `tracker_type`. Raises `ValueError` for unknown types. Note: `momentum_radius_scale` default is 4.0, matching the current `process_video` signature default.
 
 ### Modified Pass 1 in `process_video`
 
 ```
-1. Create tracker via create_tracker(tracker_type, ...)
-2. For each frame:
+1. Compute clip_duration = frame_count / fps (needed for MomentumTracker)
+2. Create tracker via create_tracker(tracker_type, clip_duration_seconds=clip_duration, fps=fps, ...)
+3. For each frame:
    a. Get boxes from track_video
    b. If ball detected with preferred obj_id:
       - If ball was previously lost and tracker.has_position:
         -> Call accept(candidate_position, ball_bbox_size)
         -> If rejected: treat as no detection, go to (c)
-      - Call update(position) -> store returned position
+      - pos = tracker.update(position) -> store pos
    c. If no valid detection:
-      - If tracker.has_position: call predict() -> store predicted position
+      - If tracker.has_position: pos = tracker.predict() -> store pos
       - Else: store None
       - If lost > 3 seconds: reset selected_obj_id AND call tracker.reset()
 ```
 
 Key changes from current pipeline:
-- Stores `update()` return value (filtered for Kalman, pass-through for Momentum)
-- Stores `predict()` output during gaps (instead of discarding it and storing None)
-- Works identically for both tracker types via the protocol
+- Stores `tracker.update()` return value instead of the raw detection position (filtered for Kalman, identical for Momentum)
+- Stores `tracker.predict()` output during gaps instead of `None` — **behavior change for both trackers**
+- Uses `has_position` instead of `is_tracking` for the re-acquisition guard (see protocol note above)
+- `clip_duration` is still computed from the video and passed to `create_tracker` for MomentumTracker's use
 
 ### Pass 2 unchanged
 
-GaussianSmoother still runs. With the Kalman tracker, it receives a mostly-continuous trajectory (fewer NaN gaps). With MomentumTracker, behavior is identical to current — predictions are now stored instead of discarded, which also improves its NaN interpolation story.
-
-**Note:** This is a behavior change for MomentumTracker too — it will now store predicted positions during gaps instead of NaN. This is an improvement for both trackers.
+GaussianSmoother still runs. With either tracker, it now receives a mostly-continuous trajectory (fewer NaN gaps — only before first detection or after a 3-second reset). This is an improvement for both trackers.
 
 ### Updated function signature
 
@@ -242,12 +268,14 @@ def process_video(
     text: list[str] | None = None,
     tracker_type: str = "momentum",
     momentum_history_size: int = 5,
-    momentum_radius_scale: float = 2.0,
+    momentum_radius_scale: float = 4.0,
     kalman_process_noise: float = 1.0,
     kalman_measurement_noise: float = 1.0,
     kalman_gate_threshold: float = 9.0,
 ) -> None:
 ```
+
+Note: `momentum_radius_scale` default stays at 4.0, matching the current signature.
 
 ## CLI changes
 
@@ -321,14 +349,10 @@ Added alongside existing MomentumTracker tests (not replacing them):
 
 ### Existing tests
 
-- MomentumTracker tests: unchanged
+- MomentumTracker tests: unchanged (except `update()` now returns a value — tests may need minor update to check return value)
 - GaussianSmoother tests: unchanged
 - Pipeline tests: updated to cover `tracker_type` parameter
 - CLI tests: updated to cover `--tracker` flag
-
-### MomentumTracker protocol conformance
-
-- `update()` returns the input position (new return value)
 
 ## Error handling
 
