@@ -112,10 +112,10 @@ class MomentumTracker:
 
         # Multi-frame confirmation during re-acquisition
         if self._confirm_count > 0:
-            # Check consistency with previous confirmation candidate using ball-size radius
+            # Check consistency with previous confirmation candidate
             cdx = candidate[0] - self._confirm_pos[0]
             cdy = candidate[1] - self._confirm_pos[1]
-            if math.sqrt(cdx ** 2 + cdy ** 2) > min_radius:
+            if math.sqrt(cdx ** 2 + cdy ** 2) > radius:
                 # Inconsistent — restart confirmation from this candidate
                 self._confirm_count = 1
                 self._confirm_pos = candidate
@@ -139,6 +139,7 @@ class MomentumTracker:
         self._predicted_x = 0.0
         self._predicted_y = 0.0
         self._confirm_count = 0
+        self._confirm_pos = (0.0, 0.0)
         self._in_gap = False
 
     def _recompute_velocity(self) -> None:

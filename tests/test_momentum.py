@@ -439,12 +439,13 @@ class TestMultiFrameConfirmation:
         mt2.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
         mt2.update((110.0, 100.0), (100.0, 90.0, 120.0, 110.0))
         mt2.predict()
-        # With radius_scale=10, spatial gate is very wide — both pass spatial
-        # But they are 60px apart from each other
-        assert mt2.accept((120.0, 100.0), bbox) is False   # count=1
-        assert mt2.accept((180.0, 100.0), bbox) is False   # far from (120,100) → reset to 1
-        assert mt2.accept((180.0, 100.0), bbox) is False   # count=2
-        assert mt2.accept((180.0, 100.0), bbox) is True    # count=3 → confirmed
+        # With radius_scale=10, speed~10, radius = max(30, ~100) ≈ 100
+        # predicted pos ≈ (120, 100). Both (40,100) and (200,100) are within
+        # 100px of prediction, but 160px from each other → consistency reset
+        assert mt2.accept((40.0, 100.0), bbox) is False    # count=1
+        assert mt2.accept((200.0, 100.0), bbox) is False   # 160px from (40,100) → reset to 1
+        assert mt2.accept((200.0, 100.0), bbox) is False   # count=2
+        assert mt2.accept((200.0, 100.0), bbox) is True    # count=3 → confirmed
 
     def test_no_confirmation_needed_when_tracking(self):
         """During continuous tracking (no gap), accept should return True immediately."""
