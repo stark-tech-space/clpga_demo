@@ -34,6 +34,7 @@ class MomentumTracker:
         radius_scale: float = 2.0,
         max_size_ratio: float = 2.0,
         max_aspect_ratio: float = 2.0,
+        confirm_frames: int = 3,
     ) -> None:
         clamped_duration = max(clip_duration_seconds, 1.0)
         k = -math.log(0.05) / clamped_duration
@@ -47,9 +48,15 @@ class MomentumTracker:
         self._vy: float = 0.0
         self._predicted_x: float = 0.0
         self._predicted_y: float = 0.0
+        self._confirm_frames = confirm_frames
+        self._confirm_count: int = 0
+        self._confirm_pos: tuple[float, float] = (0.0, 0.0)
+        self._in_gap: bool = False
 
     def update(self, position: tuple[float, float], bbox: tuple[float, float, float, float]) -> tuple[float, float]:
         """Feed a confirmed detection. Appends to history and recomputes velocity."""
+        self._in_gap = False
+        self._confirm_count = 0
         self._history.append(position)
         w = bbox[2] - bbox[0]
         h = bbox[3] - bbox[1]
@@ -61,6 +68,7 @@ class MomentumTracker:
 
     def predict(self) -> tuple[float, float]:
         """Advance one frame during occlusion. Returns predicted position with decayed velocity."""
+        self._in_gap = True
         self._vx *= self._per_frame_decay
         self._vy *= self._per_frame_decay
         self._predicted_x += self._vx
@@ -75,6 +83,7 @@ class MomentumTracker:
         # Aspect ratio gate
         short = min(w, h)
         if short <= 0 or max(w, h) / short > self._max_aspect_ratio:
+            self._confirm_count = 0
             return False
 
         # Size consistency gate
@@ -83,16 +92,43 @@ class MomentumTracker:
             median_size = float(sorted(self._ball_sizes)[len(self._ball_sizes) // 2])
             ratio = candidate_size / median_size if median_size > 0 else 1.0
             if ratio > self._max_size_ratio or ratio < 1.0 / self._max_size_ratio:
+                self._confirm_count = 0
                 return False
 
-        # Spatial gate (unchanged)
+        # Spatial gate
         ball_size = (w + h) / 2
         min_radius = 1.5 * ball_size
         radius = max(min_radius, self.speed * self._radius_scale)
         dx = candidate[0] - self._predicted_x
         dy = candidate[1] - self._predicted_y
         distance = math.sqrt(dx ** 2 + dy ** 2)
-        return distance <= radius
+        if distance > radius:
+            self._confirm_count = 0
+            return False
+
+        # No confirmation needed during continuous tracking
+        if not self._in_gap:
+            return True
+
+        # Multi-frame confirmation during re-acquisition
+        if self._confirm_count > 0:
+            # Check consistency with previous confirmation candidate using ball-size radius
+            cdx = candidate[0] - self._confirm_pos[0]
+            cdy = candidate[1] - self._confirm_pos[1]
+            if math.sqrt(cdx ** 2 + cdy ** 2) > min_radius:
+                # Inconsistent — restart confirmation from this candidate
+                self._confirm_count = 1
+                self._confirm_pos = candidate
+                return False
+
+        self._confirm_count += 1
+        self._confirm_pos = candidate
+
+        if self._confirm_count >= self._confirm_frames:
+            self._confirm_count = 0
+            return True
+
+        return False
 
     def reset(self) -> None:
         """Clear all state — position history, velocity, and predicted position."""
@@ -102,6 +138,8 @@ class MomentumTracker:
         self._vy = 0.0
         self._predicted_x = 0.0
         self._predicted_y = 0.0
+        self._confirm_count = 0
+        self._in_gap = False
 
     def _recompute_velocity(self) -> None:
         """Recompute velocity from position history using linear-weighted deltas."""

@@ -105,7 +105,7 @@ class TestExponentialDecay:
 class TestAcceptance:
     def test_accept_near_prediction(self):
         """Candidate near predicted position should be accepted."""
-        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0, confirm_frames=1)
         mt.update((100.0, 100.0), (95.0, 95.0, 105.0, 105.0))
         mt.update((110.0, 100.0), (105.0, 95.0, 115.0, 105.0))  # vx=10
         mt.predict()  # predicted ~= (119.97, 100)
@@ -370,7 +370,7 @@ class TestShapeGate:
 
     def test_accept_similar_size(self):
         """Candidate within 2x size tolerance should pass size gate."""
-        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0, confirm_frames=1)
         mt.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
         mt.update((110.0, 100.0), (100.0, 90.0, 120.0, 110.0))
         mt.predict()
@@ -379,10 +379,81 @@ class TestShapeGate:
 
     def test_size_gate_skipped_on_first_detection(self):
         """No size history → size gate should not reject."""
-        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0, confirm_frames=1)
         mt.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
         mt.predict()
         assert mt.accept((110.0, 100.0), (95.0, 85.0, 125.0, 115.0)) is True
+
+
+class TestMultiFrameConfirmation:
+    def test_transient_false_positive_rejected(self):
+        """1-2 frames of a passing candidate should not be accepted."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0, confirm_frames=3)
+        mt.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
+        mt.update((110.0, 100.0), (100.0, 90.0, 120.0, 110.0))
+        mt.predict()  # frame lost → now in gap
+        bbox = (105.0, 85.0, 125.0, 115.0)
+        # 2 frames of a valid-looking candidate — should NOT be accepted (need 3)
+        assert mt.accept((120.0, 100.0), bbox) is False
+        assert mt.accept((120.0, 100.0), bbox) is False
+
+    def test_confirmed_after_n_frames(self):
+        """N consecutive passing candidates should be accepted on Nth frame."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0, confirm_frames=3)
+        mt.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
+        mt.update((110.0, 100.0), (100.0, 90.0, 120.0, 110.0))
+        mt.predict()  # enter gap
+        bbox = (105.0, 85.0, 125.0, 115.0)
+        assert mt.accept((120.0, 100.0), bbox) is False  # 1 of 3
+        assert mt.accept((120.0, 100.0), bbox) is False  # 2 of 3
+        assert mt.accept((120.0, 100.0), bbox) is True   # 3 of 3 → confirmed
+
+    def test_confirmation_resets_on_failure(self):
+        """A failing candidate mid-confirmation resets the counter."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0, confirm_frames=3)
+        mt.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
+        mt.update((110.0, 100.0), (100.0, 90.0, 120.0, 110.0))
+        mt.predict()
+        good_bbox = (105.0, 85.0, 125.0, 115.0)
+        # 2 good, then 1 far away (spatial fail), then need full 3 again
+        assert mt.accept((120.0, 100.0), good_bbox) is False  # 1
+        assert mt.accept((120.0, 100.0), good_bbox) is False  # 2
+        assert mt.accept((500.0, 500.0), good_bbox) is False  # fail → reset
+        assert mt.accept((120.0, 100.0), good_bbox) is False  # 1 again
+        assert mt.accept((120.0, 100.0), good_bbox) is False  # 2
+        assert mt.accept((120.0, 100.0), good_bbox) is True   # 3 → confirmed
+
+    def test_confirmation_requires_spatial_consistency(self):
+        """Consecutive candidates must be near each other, not just near prediction."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0, confirm_frames=3)
+        mt.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
+        mt.update((110.0, 100.0), (100.0, 90.0, 120.0, 110.0))
+        mt.predict()
+        bbox = (105.0, 85.0, 125.0, 115.0)
+        # Two candidates that both pass spatial gate but are far from each other
+        assert mt.accept((115.0, 100.0), bbox) is False  # count=1, pos=(115,100)
+        assert mt.accept((125.0, 100.0), bbox) is False  # near (115,100)? depends on radius
+        # Put them really far apart to ensure they fail consistency
+        # First at one valid spot, second at a different valid spot far away
+        mt2 = MomentumTracker(clip_duration_seconds=10.0, fps=30.0, confirm_frames=3, radius_scale=10.0)
+        mt2.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
+        mt2.update((110.0, 100.0), (100.0, 90.0, 120.0, 110.0))
+        mt2.predict()
+        # With radius_scale=10, spatial gate is very wide — both pass spatial
+        # But they are 60px apart from each other
+        assert mt2.accept((120.0, 100.0), bbox) is False   # count=1
+        assert mt2.accept((180.0, 100.0), bbox) is False   # far from (120,100) → reset to 1
+        assert mt2.accept((180.0, 100.0), bbox) is False   # count=2
+        assert mt2.accept((180.0, 100.0), bbox) is True    # count=3 → confirmed
+
+    def test_no_confirmation_needed_when_tracking(self):
+        """During continuous tracking (no gap), accept should return True immediately."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0, confirm_frames=3)
+        mt.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
+        mt.update((110.0, 100.0), (100.0, 90.0, 120.0, 110.0))
+        # No predict() call → not in a gap
+        bbox = (105.0, 85.0, 125.0, 115.0)
+        assert mt.accept((120.0, 100.0), bbox) is True
 
 
 class TestCreateTracker:
