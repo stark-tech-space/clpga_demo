@@ -11,9 +11,9 @@ import numpy as np
 
 @runtime_checkable
 class BallTracker(Protocol):
-    def update(self, position: tuple[float, float]) -> tuple[float, float]: ...
+    def update(self, position: tuple[float, float], bbox: tuple[float, float, float, float]) -> tuple[float, float]: ...
     def predict(self) -> tuple[float, float]: ...
-    def accept(self, candidate: tuple[float, float], ball_size: float) -> bool: ...
+    def accept(self, candidate: tuple[float, float], bbox: tuple[float, float, float, float]) -> bool: ...
     def reset(self) -> None: ...
     @property
     def velocity(self) -> tuple[float, float]: ...
@@ -43,7 +43,7 @@ class MomentumTracker:
         self._predicted_x: float = 0.0
         self._predicted_y: float = 0.0
 
-    def update(self, position: tuple[float, float]) -> tuple[float, float]:
+    def update(self, position: tuple[float, float], bbox: tuple[float, float, float, float]) -> tuple[float, float]:
         """Feed a confirmed detection. Appends to history and recomputes velocity."""
         self._history.append(position)
         self._recompute_velocity()
@@ -59,8 +59,11 @@ class MomentumTracker:
         self._predicted_y += self._vy
         return (self._predicted_x, self._predicted_y)
 
-    def accept(self, candidate: tuple[float, float], ball_size: float) -> bool:
+    def accept(self, candidate: tuple[float, float], bbox: tuple[float, float, float, float]) -> bool:
         """Check if a candidate detection is within the velocity-scaled acceptance radius."""
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        ball_size = (w + h) / 2
         min_radius = 1.5 * ball_size
         radius = max(min_radius, self.speed * self._radius_scale)
         dx = candidate[0] - self._predicted_x
@@ -160,7 +163,7 @@ class KalmanBallTracker:
         # Measurement noise R
         self._R = (measurement_noise ** 2) * np.eye(2)
 
-    def update(self, position: tuple[float, float]) -> tuple[float, float]:
+    def update(self, position: tuple[float, float], bbox: tuple[float, float, float, float]) -> tuple[float, float]:
         """Predict then correct with measurement. Returns filtered position."""
         z = np.array(position)
         if not self._initialized:
@@ -191,11 +194,10 @@ class KalmanBallTracker:
         self._P = self._F @ self._P @ self._F.T + self._Q
         return (float(self._x[0]), float(self._x[1]))
 
-    def accept(self, candidate: tuple[float, float], ball_size: float) -> bool:
-        """Mahalanobis distance gating. ball_size unused (protocol compat)."""
+    def accept(self, candidate: tuple[float, float], bbox: tuple[float, float, float, float]) -> bool:
+        """Mahalanobis distance gating."""
         if not self._initialized:
             return True
-        # Hypothetical prediction (don't modify state)
         x_pred = self._F @ self._x
         P_pred = self._F @ self._P @ self._F.T + self._Q
         z = np.array(candidate)

@@ -73,10 +73,7 @@ def process_video(
         if result is not None:
             if frames_since_lost > 0 and tracker.has_position:
                 # Re-acquisition: check proximity to tracker prediction
-                ball_w = result.bbox[2] - result.bbox[0]
-                ball_h = result.bbox[3] - result.bbox[1]
-                ball_size = (ball_w + ball_h) / 2
-                if not tracker.accept((result.center_x, result.center_y), ball_size):
+                if not tracker.accept((result.center_x, result.center_y), result.bbox):
                     logger.debug(
                         "Frame %d: rejected detection obj_id=%d — too far from tracker prediction",
                         frame_idx, result.obj_id,
@@ -91,7 +88,7 @@ def process_video(
             if selected_obj_id is None:
                 selected_obj_id = result.obj_id
                 logger.info(f"Selected ball obj_id={result.obj_id} at frame {frame_idx}")
-            pos = tracker.update((result.center_x, result.center_y))
+            pos = tracker.update((result.center_x, result.center_y), result.bbox)
             positions.append(pos)
             frames_since_lost = 0
         else:
