@@ -21,6 +21,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--confidence", type=float, default=None, help="Detection confidence threshold")
     parser.add_argument("--momentum-history", type=int, default=None, help="Momentum tracker history size")
     parser.add_argument("--momentum-radius", type=float, default=None, help="Momentum acceptance radius scale factor")
+    parser.add_argument("--confirm-frames", type=int, default=None, help="Re-acquisition confirmation frames")
+    parser.add_argument("--max-size-ratio", type=float, default=None, help="Max size ratio for shape gate")
+    parser.add_argument("--max-aspect-ratio", type=float, default=None, help="Max aspect ratio for shape gate")
     parser.add_argument("--tracker", default=None, choices=["momentum", "kalman"], help="Tracker type: momentum or kalman")
     parser.add_argument("--kalman-process-noise", type=float, default=None, help="Kalman process noise")
     parser.add_argument("--kalman-measurement-noise", type=float, default=None, help="Kalman measurement noise")
@@ -39,6 +42,9 @@ def resolve_args(args: argparse.Namespace) -> dict:
         "confidence": "confidence",
         "momentum_history": "momentum_history_size",
         "momentum_radius": "momentum_radius_scale",
+        "confirm_frames": "momentum_confirm_frames",
+        "max_size_ratio": "momentum_max_size_ratio",
+        "max_aspect_ratio": "momentum_max_aspect_ratio",
         "tracker": "tracker_type",
         "kalman_process_noise": "kalman_process_noise",
         "kalman_measurement_noise": "kalman_measurement_noise",
@@ -73,6 +79,9 @@ def main() -> None:
             tracker_type=resolved.get("tracker_type", "momentum"),
             momentum_history_size=resolved.get("momentum_history_size", 5),
             momentum_radius_scale=resolved.get("momentum_radius_scale", 4.0),
+            momentum_confirm_frames=resolved.get("momentum_confirm_frames", 3),
+            momentum_max_size_ratio=resolved.get("momentum_max_size_ratio", 2.0),
+            momentum_max_aspect_ratio=resolved.get("momentum_max_aspect_ratio", 2.0),
             kalman_process_noise=resolved.get("kalman_process_noise", 1.0),
             kalman_measurement_noise=resolved.get("kalman_measurement_noise", 1.0),
             kalman_gate_threshold=resolved.get("kalman_gate_threshold", 9.0),
