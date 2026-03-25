@@ -338,6 +338,53 @@ class TestKalmanBlending:
         assert 195.0 < result[1] < 215.0
 
 
+class TestShapeGate:
+    def test_reject_elongated_bbox(self):
+        """Candidate with aspect ratio > 2.0 should be rejected."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        mt.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
+        mt.update((110.0, 100.0), (100.0, 90.0, 120.0, 110.0))
+        mt.predict()  # enter gap
+        # Elongated bbox: 50px wide, 10px tall → ratio = 5.0
+        assert mt.accept((120.0, 100.0), (95.0, 95.0, 145.0, 105.0)) is False
+
+    def test_reject_oversized_detection(self):
+        """Candidate 5x larger than remembered ball size should be rejected."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        # Ball is ~20px (bbox 20x20)
+        mt.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
+        mt.update((110.0, 100.0), (100.0, 90.0, 120.0, 110.0))
+        mt.predict()
+        # Candidate is ~100px (bbox 100x100) — 5x larger
+        assert mt.accept((120.0, 100.0), (70.0, 50.0, 170.0, 150.0)) is False
+
+    def test_reject_undersized_detection(self):
+        """Candidate 5x smaller than remembered ball size should be rejected."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        # Ball is ~20px
+        mt.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
+        mt.update((110.0, 100.0), (100.0, 90.0, 120.0, 110.0))
+        mt.predict()
+        # Candidate is ~4px (bbox 4x4)
+        assert mt.accept((120.0, 100.0), (118.0, 98.0, 122.0, 102.0)) is False
+
+    def test_accept_similar_size(self):
+        """Candidate within 2x size tolerance should pass size gate."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        mt.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
+        mt.update((110.0, 100.0), (100.0, 90.0, 120.0, 110.0))
+        mt.predict()
+        # Candidate is ~30px (1.5x) — within 2x tolerance
+        assert mt.accept((120.0, 100.0), (105.0, 85.0, 135.0, 115.0)) is True
+
+    def test_size_gate_skipped_on_first_detection(self):
+        """No size history → size gate should not reject."""
+        mt = MomentumTracker(clip_duration_seconds=10.0, fps=30.0)
+        mt.update((100.0, 100.0), (90.0, 90.0, 110.0, 110.0))
+        mt.predict()
+        assert mt.accept((110.0, 100.0), (95.0, 85.0, 125.0, 115.0)) is True
+
+
 class TestCreateTracker:
     def test_creates_momentum_tracker(self):
         tracker = create_tracker(

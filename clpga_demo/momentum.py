@@ -32,12 +32,17 @@ class MomentumTracker:
         fps: float,
         history_size: int = 5,
         radius_scale: float = 2.0,
+        max_size_ratio: float = 2.0,
+        max_aspect_ratio: float = 2.0,
     ) -> None:
         clamped_duration = max(clip_duration_seconds, 1.0)
         k = -math.log(0.05) / clamped_duration
         self._per_frame_decay = math.exp(-k / fps)
         self._radius_scale = radius_scale
+        self._max_size_ratio = max_size_ratio
+        self._max_aspect_ratio = max_aspect_ratio
         self._history: deque[tuple[float, float]] = deque(maxlen=history_size)
+        self._ball_sizes: deque[float] = deque(maxlen=history_size)
         self._vx: float = 0.0
         self._vy: float = 0.0
         self._predicted_x: float = 0.0
@@ -46,6 +51,9 @@ class MomentumTracker:
     def update(self, position: tuple[float, float], bbox: tuple[float, float, float, float]) -> tuple[float, float]:
         """Feed a confirmed detection. Appends to history and recomputes velocity."""
         self._history.append(position)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        self._ball_sizes.append((w + h) / 2)
         self._recompute_velocity()
         self._predicted_x = position[0]
         self._predicted_y = position[1]
@@ -63,6 +71,21 @@ class MomentumTracker:
         """Check if a candidate detection is within the velocity-scaled acceptance radius."""
         w = bbox[2] - bbox[0]
         h = bbox[3] - bbox[1]
+
+        # Aspect ratio gate
+        short = min(w, h)
+        if short <= 0 or max(w, h) / short > self._max_aspect_ratio:
+            return False
+
+        # Size consistency gate
+        if self._ball_sizes:
+            candidate_size = (w + h) / 2
+            median_size = float(sorted(self._ball_sizes)[len(self._ball_sizes) // 2])
+            ratio = candidate_size / median_size if median_size > 0 else 1.0
+            if ratio > self._max_size_ratio or ratio < 1.0 / self._max_size_ratio:
+                return False
+
+        # Spatial gate (unchanged)
         ball_size = (w + h) / 2
         min_radius = 1.5 * ball_size
         radius = max(min_radius, self.speed * self._radius_scale)
@@ -74,6 +97,7 @@ class MomentumTracker:
     def reset(self) -> None:
         """Clear all state — position history, velocity, and predicted position."""
         self._history.clear()
+        self._ball_sizes.clear()
         self._vx = 0.0
         self._vy = 0.0
         self._predicted_x = 0.0
