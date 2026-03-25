@@ -487,3 +487,14 @@ class TestCreateTracker:
         )
         assert isinstance(tracker, KalmanBallTracker)
         assert tracker._gate_threshold == 16.0
+
+    def test_passes_confirmation_params(self):
+        tracker = create_tracker(
+            "momentum", clip_duration_seconds=5.0, fps=60.0,
+            momentum_confirm_frames=5, momentum_max_size_ratio=3.0,
+            momentum_max_aspect_ratio=1.5,
+        )
+        assert isinstance(tracker, MomentumTracker)
+        assert tracker._confirm_frames == 5
+        assert tracker._max_size_ratio == 3.0
+        assert tracker._max_aspect_ratio == 1.5

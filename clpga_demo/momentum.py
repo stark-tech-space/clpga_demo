@@ -295,6 +295,9 @@ def create_tracker(
     fps: float = 30.0,
     momentum_history_size: int = 5,
     momentum_radius_scale: float = 4.0,
+    momentum_confirm_frames: int = 3,
+    momentum_max_size_ratio: float = 2.0,
+    momentum_max_aspect_ratio: float = 2.0,
     kalman_process_noise: float = 1.0,
     kalman_measurement_noise: float = 1.0,
     kalman_gate_threshold: float = 9.0,
@@ -306,6 +309,9 @@ def create_tracker(
             fps=fps,
             history_size=momentum_history_size,
             radius_scale=momentum_radius_scale,
+            confirm_frames=momentum_confirm_frames,
+            max_size_ratio=momentum_max_size_ratio,
+            max_aspect_ratio=momentum_max_aspect_ratio,
         )
     elif tracker_type == "kalman":
         return KalmanBallTracker(
