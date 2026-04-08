@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.ndimage import binary_dilation
 
 logger = logging.getLogger(__name__)
 
@@ -123,3 +124,61 @@ class FrameCleaner:
 
         candidates.sort()
         return candidates[0][1]
+
+    def generate_quadmask_frame(
+        self,
+        ball_mask: np.ndarray | None,
+        distractor_masks: list[np.ndarray],
+        corridor: Corridor,
+        frame_h: int,
+        frame_w: int,
+    ) -> np.ndarray:
+        """Generate a single-frame quadmask for void-model.
+
+        Args:
+            ball_mask: (H, W) boolean mask of the ball, or None.
+            distractor_masks: List of (H, W) boolean masks to remove.
+            corridor: The corridor for this frame.
+            frame_h: Frame height.
+            frame_w: Frame width.
+
+        Returns:
+            (H, W) uint8 quadmask: 0=remove, 127=affected, 255=keep.
+        """
+        quadmask = np.full((frame_h, frame_w), 255, dtype=np.uint8)
+
+        if not distractor_masks:
+            return quadmask
+
+        # Merge distractor masks
+        merged = np.zeros((frame_h, frame_w), dtype=bool)
+        for m in distractor_masks:
+            merged |= m
+
+        # Clip to corridor bounds
+        corridor_mask = np.zeros((frame_h, frame_w), dtype=bool)
+        corridor_mask[corridor.y1:corridor.y2, corridor.x1:corridor.x2] = True
+        merged &= corridor_mask
+
+        # Dilate to avoid artifact halos
+        if self._mask_dilation_px > 0:
+            merged = binary_dilation(merged, iterations=self._mask_dilation_px)
+            merged &= corridor_mask  # Re-clip after dilation
+
+        # Set distractor region to 0 (remove)
+        quadmask[merged] = 0
+
+        # Set corridor boundary to 127 (affected)
+        boundary = corridor_mask & ~merged
+        if ball_mask is not None:
+            boundary &= ~ball_mask
+        quadmask[boundary & (quadmask == 255)] = 127
+
+        # Ensure ball region stays 255
+        if ball_mask is not None:
+            quadmask[ball_mask] = 255
+
+        # Ensure outside corridor is 255
+        quadmask[~corridor_mask] = 255
+
+        return quadmask

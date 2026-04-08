@@ -160,3 +160,72 @@ class TestBallMaskIdentification:
         cleaner = self._make_cleaner()
         result = cleaner.identify_ball_mask([], (100.0, 100.0), 20.0)
         assert result is None
+
+
+class TestQuadmaskGeneration:
+    def _make_cleaner(self):
+        return FrameCleaner(
+            sam3_model=None,
+            void_model=None,
+            corridor_config={
+                "corridor_multiplier": 4.0,
+                "corridor_speed_scale": 1.5,
+                "radius_scale": 4.0,
+                "mask_dilation_px": 3,
+                "max_aspect_ratio": 2.0,
+                "max_size_ratio": 2.0,
+            },
+        )
+
+    def test_ball_mask_region_is_255(self):
+        """Ball mask pixels should be 255 (keep) in the quadmask."""
+        cleaner = self._make_cleaner()
+        ball_mask = np.zeros((480, 640), dtype=bool)
+        ball_mask[90:110, 90:110] = True
+        distractor_mask = np.zeros((480, 640), dtype=bool)
+        distractor_mask[200:220, 200:220] = True
+        corridor = Corridor(center_x=100, center_y=100, radius=80, x1=20, y1=20, x2=180, y2=180)
+        quadmask = cleaner.generate_quadmask_frame(
+            ball_mask=ball_mask, distractor_masks=[distractor_mask],
+            corridor=corridor, frame_h=480, frame_w=640,
+        )
+        assert quadmask.shape == (480, 640)
+        assert quadmask.dtype == np.uint8
+        assert np.all(quadmask[90:110, 90:110] == 255)
+
+    def test_distractor_region_is_0(self):
+        """Distractor mask pixels (after dilation) should be 0 (remove)."""
+        cleaner = self._make_cleaner()
+        ball_mask = np.zeros((480, 640), dtype=bool)
+        ball_mask[90:110, 90:110] = True
+        distractor_mask = np.zeros((480, 640), dtype=bool)
+        distractor_mask[140:160, 140:160] = True  # Inside corridor
+        corridor = Corridor(center_x=100, center_y=100, radius=80, x1=20, y1=20, x2=180, y2=180)
+        quadmask = cleaner.generate_quadmask_frame(
+            ball_mask=ball_mask, distractor_masks=[distractor_mask],
+            corridor=corridor, frame_h=480, frame_w=640,
+        )
+        assert np.all(quadmask[142:158, 142:158] == 0)
+
+    def test_outside_corridor_is_255(self):
+        """Everything outside the corridor should be 255 (keep)."""
+        cleaner = self._make_cleaner()
+        corridor = Corridor(center_x=100, center_y=100, radius=80, x1=20, y1=20, x2=180, y2=180)
+        quadmask = cleaner.generate_quadmask_frame(
+            ball_mask=None, distractor_masks=[], corridor=corridor, frame_h=480, frame_w=640,
+        )
+        assert np.all(quadmask[0:20, :] == 255)
+        assert np.all(quadmask[180:, :] == 255)
+        assert np.all(quadmask[:, 0:20] == 255)
+        assert np.all(quadmask[:, 180:] == 255)
+
+    def test_no_distractors_returns_all_255(self):
+        """If no distractor masks, entire quadmask should be 255."""
+        cleaner = self._make_cleaner()
+        ball_mask = np.zeros((480, 640), dtype=bool)
+        ball_mask[90:110, 90:110] = True
+        corridor = Corridor(center_x=100, center_y=100, radius=80, x1=20, y1=20, x2=180, y2=180)
+        quadmask = cleaner.generate_quadmask_frame(
+            ball_mask=ball_mask, distractor_masks=[], corridor=corridor, frame_h=480, frame_w=640,
+        )
+        assert np.all(quadmask == 255)
