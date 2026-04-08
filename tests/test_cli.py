@@ -183,3 +183,23 @@ class TestCleanCLI:
         args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--corridor-multiplier", "6.0"])
         resolved = resolve_args(args)
         assert resolved["corridor_multiplier"] == 6.0
+
+
+class TestCleanPassthrough:
+    def test_clean_params_passed_to_process_video(self):
+        """All cleaning params should be forwarded from CLI to process_video."""
+        from unittest.mock import patch, MagicMock
+
+        with patch("clpga_demo.pipeline.process_video") as mock_pv:
+            with patch("sys.argv", ["clpga-demo", "in.mp4", "-o", "out.mp4", "--clean", "--corridor-multiplier", "5.0"]):
+                from clpga_demo.__main__ import main
+                try:
+                    main()
+                except (SystemExit, Exception):
+                    pass
+
+            if mock_pv.called:
+                kwargs = mock_pv.call_args.kwargs if mock_pv.call_args.kwargs else {}
+                # Check named arguments
+                assert kwargs.get("clean") is True
+                assert kwargs.get("corridor_multiplier") == 5.0

@@ -98,6 +98,14 @@ def main() -> None:
             kalman_process_noise=resolved.get("kalman_process_noise", 1.0),
             kalman_measurement_noise=resolved.get("kalman_measurement_noise", 1.0),
             kalman_gate_threshold=resolved.get("kalman_gate_threshold", 9.0),
+            clean=resolved.get("clean", False),
+            corridor_multiplier=resolved.get("corridor_multiplier", 4.0),
+            corridor_speed_scale=resolved.get("corridor_speed_scale", 1.5),
+            mask_dilation_px=resolved.get("mask_dilation_px", 5),
+            segment_max_frames=resolved.get("segment_max_frames", 180),
+            segment_overlap_frames=resolved.get("segment_overlap_frames", 16),
+            void_model_dir=resolved.get("void_model_dir"),
+            clean_prompt=resolved.get("clean_prompt", "golf course background"),
         )
     except (ValueError, RuntimeError) as e:
         print(f"Error: {e}", file=sys.stderr)
