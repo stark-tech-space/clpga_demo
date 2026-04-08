@@ -272,3 +272,63 @@ class TestOverlapBlending:
         seg = np.full((10, 4, 4, 3), 128, dtype=np.uint8)
         result = FrameCleaner.blend_segments([seg], [(0, 10)], total_frames=10)
         assert np.array_equal(result, seg)
+
+
+from unittest.mock import patch, MagicMock
+
+
+class TestCleanSegments:
+    def test_clean_segments_calls_void_model(self):
+        """clean_segments should invoke void_model.inpaint for each segment."""
+        mock_void = MagicMock()
+        mock_void.inpaint.return_value = np.zeros((10, 384, 672, 3), dtype=np.uint8)
+
+        cleaner = FrameCleaner(
+            sam3_model=None,
+            void_model=mock_void,
+            corridor_config={
+                "corridor_multiplier": 4.0,
+                "corridor_speed_scale": 1.5,
+                "radius_scale": 4.0,
+                "mask_dilation_px": 5,
+                "max_aspect_ratio": 2.0,
+                "max_size_ratio": 2.0,
+            },
+        )
+
+        video_frames = np.zeros((10, 384, 672, 3), dtype=np.uint8)
+        quadmasks = np.full((10, 384, 672), 255, dtype=np.uint8)
+        # Mark some pixels for removal so it's not all-255
+        quadmasks[:, 100:150, 200:250] = 0
+        segments = [(0, 10)]
+
+        result = cleaner.clean_segments(video_frames, quadmasks, segments, "golf course")
+
+        assert len(result) == 1
+        mock_void.inpaint.assert_called_once()
+
+    def test_clean_segments_skips_all_255_quadmask(self):
+        """If a segment's quadmask is all 255 (nothing to remove), skip void-model."""
+        mock_void = MagicMock()
+
+        cleaner = FrameCleaner(
+            sam3_model=None,
+            void_model=mock_void,
+            corridor_config={
+                "corridor_multiplier": 4.0,
+                "corridor_speed_scale": 1.5,
+                "radius_scale": 4.0,
+                "mask_dilation_px": 5,
+                "max_aspect_ratio": 2.0,
+                "max_size_ratio": 2.0,
+            },
+        )
+
+        video_frames = np.zeros((10, 384, 672, 3), dtype=np.uint8)
+        quadmasks = np.full((10, 384, 672), 255, dtype=np.uint8)  # Nothing to remove
+        segments = [(0, 10)]
+
+        result = cleaner.clean_segments(video_frames, quadmasks, segments, "golf course")
+
+        mock_void.inpaint.assert_not_called()
+        assert np.array_equal(result[0], video_frames)

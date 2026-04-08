@@ -183,6 +183,41 @@ class FrameCleaner:
 
         return quadmask
 
+    def clean_segments(
+        self,
+        video_frames: np.ndarray,
+        quadmasks: np.ndarray,
+        segments: list[tuple[int, int]],
+        prompt: str,
+    ) -> list[np.ndarray]:
+        """Run void-model inpainting on each video segment.
+
+        Args:
+            video_frames: (T, H, W, 3) uint8 full video frames.
+            quadmasks: (T, H, W) uint8 quadmask for each frame.
+            segments: List of (start, end) frame ranges.
+            prompt: Background description for void-model.
+
+        Returns:
+            List of (seg_len, H, W, 3) uint8 cleaned segment arrays.
+        """
+        cleaned: list[np.ndarray] = []
+
+        for start, end in segments:
+            seg_video = video_frames[start:end]
+            seg_mask = quadmasks[start:end]
+
+            if np.all(seg_mask == 255):
+                logger.debug("Segment %d-%d: no distractors, skipping inpainting", start, end)
+                cleaned.append(seg_video.copy())
+                continue
+
+            logger.info("Cleaning segment frames %d-%d with void-model", start, end)
+            result = self._void_model.inpaint(seg_video, seg_mask, prompt)
+            cleaned.append(result)
+
+        return cleaned
+
     @staticmethod
     def split_into_segments(
         total_frames: int,
