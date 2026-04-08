@@ -216,3 +216,39 @@ class TestKalmanGapHandling:
             process_video(input_path, output_path, tracker_type="kalman")
 
         assert Path(output_path).exists()
+
+
+class TestCleaningPipeline:
+    def test_clean_flag_invokes_cleaning_pass(self, tmp_path):
+        """When clean=True, process_video should use FrameCleaner."""
+        input_path = str(tmp_path / "input.mp4")
+        output_path = str(tmp_path / "output.mp4")
+        _create_test_video(input_path, frames=20)
+
+        with patch("clpga_demo.pipeline.track_video", side_effect=lambda s, **kw: _mock_track_video(s)):
+            with patch("clpga_demo.cleaner.FrameCleaner") as MockCleaner:
+                mock_instance = MockCleaner.return_value
+                mock_instance.compute_corridors.return_value = [None] * 20
+                mock_instance.generate_quadmasks.return_value = np.zeros((20, 240, 320), dtype=np.uint8)
+                mock_instance.clean_segments.return_value = [np.zeros((20, 240, 320, 3), dtype=np.uint8)]
+                MockCleaner.split_into_segments.return_value = [(0, 20)]
+                MockCleaner.blend_segments.return_value = np.zeros((20, 240, 320, 3), dtype=np.uint8)
+                with patch("clpga_demo.void_model.VoidModelWrapper") as MockVoid:
+                    mock_void = MockVoid.return_value
+                    mock_void.download_if_needed.return_value = "/fake"
+                    with patch("clpga_demo.pipeline._retrack_cleaned") as mock_retrack:
+                        mock_retrack.return_value = [(100 + i * 10, 120) for i in range(20)]
+                        process_video(input_path, output_path, clean=True)
+
+        assert MockCleaner.called
+
+    def test_clean_false_skips_cleaning(self, tmp_path):
+        """When clean=False (default), cleaning pass should be skipped."""
+        input_path = str(tmp_path / "input.mp4")
+        output_path = str(tmp_path / "output.mp4")
+        _create_test_video(input_path)
+
+        with patch("clpga_demo.pipeline.track_video", side_effect=lambda s, **kw: _mock_track_video(s)):
+            process_video(input_path, output_path, clean=False)
+
+        assert Path(output_path).exists()
