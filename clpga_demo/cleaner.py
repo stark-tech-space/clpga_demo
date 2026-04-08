@@ -182,3 +182,79 @@ class FrameCleaner:
         quadmask[~corridor_mask] = 255
 
         return quadmask
+
+    @staticmethod
+    def split_into_segments(
+        total_frames: int,
+        max_frames: int,
+        overlap: int,
+    ) -> list[tuple[int, int]]:
+        """Split a frame range into overlapping segments for void-model."""
+        if total_frames <= max_frames:
+            return [(0, total_frames)]
+
+        segments: list[tuple[int, int]] = []
+        start = 0
+        stride = max_frames - overlap
+
+        while start < total_frames:
+            end = min(start + max_frames, total_frames)
+            segments.append((start, end))
+            if end == total_frames:
+                break
+            start += stride
+
+        return segments
+
+    @staticmethod
+    def blend_segments(
+        seg_frames: list[np.ndarray],
+        segments: list[tuple[int, int]],
+        total_frames: int,
+    ) -> np.ndarray:
+        """Blend overlapping video segments using linear crossfade.
+
+        In overlap zones, weights transition linearly from 1.0/0.0 to 0.0/1.0
+        between preceding and following segments.
+        """
+        if len(seg_frames) == 1:
+            return seg_frames[0]
+
+        h, w, c = seg_frames[0].shape[1:]
+        result = np.zeros((total_frames, h, w, c), dtype=np.float32)
+        weights = np.zeros((total_frames, 1, 1, 1), dtype=np.float32)
+
+        for seg_arr, (start, end) in zip(seg_frames, segments):
+            seg_len = end - start
+            w_arr = np.ones(seg_len, dtype=np.float32)
+
+            # Ramp up at start if overlapping with previous segment
+            if start > 0:
+                prev_end = None
+                for ps, pe in segments:
+                    if pe > start and ps < start:
+                        prev_end = pe
+                        break
+                if prev_end is not None:
+                    overlap_len = prev_end - start
+                    ramp = np.linspace(0, 1, overlap_len + 2)[1:-1]
+                    w_arr[:overlap_len] = ramp
+
+            # Ramp down at end if overlapping with next segment
+            next_start = None
+            for ns, ne in segments:
+                if ns > start and ns < end:
+                    next_start = ns
+                    break
+            if next_start is not None:
+                overlap_len = end - next_start
+                ramp = np.linspace(1, 0, overlap_len + 2)[1:-1]
+                w_arr[seg_len - overlap_len:] = ramp
+
+            w_shaped = w_arr.reshape(-1, 1, 1, 1)
+            result[start:end] += seg_arr.astype(np.float32) * w_shaped
+            weights[start:end] += w_shaped
+
+        weights = np.maximum(weights, 1e-8)
+        result = (result / weights).clip(0, 255).astype(np.uint8)
+        return result

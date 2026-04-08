@@ -229,3 +229,46 @@ class TestQuadmaskGeneration:
             ball_mask=ball_mask, distractor_masks=[], corridor=corridor, frame_h=480, frame_w=640,
         )
         assert np.all(quadmask == 255)
+
+
+class TestSegmentSplitting:
+    def test_short_video_single_segment(self):
+        segments = FrameCleaner.split_into_segments(total_frames=100, max_frames=180, overlap=16)
+        assert segments == [(0, 100)]
+
+    def test_exact_max_frames_single_segment(self):
+        segments = FrameCleaner.split_into_segments(total_frames=180, max_frames=180, overlap=16)
+        assert segments == [(0, 180)]
+
+    def test_long_video_multiple_segments_with_overlap(self):
+        segments = FrameCleaner.split_into_segments(total_frames=300, max_frames=180, overlap=16)
+        assert segments[0] == (0, 180)
+        assert segments[1][0] == 164  # 180 - 16
+        assert segments[-1][1] == 300
+
+    def test_segments_cover_all_frames(self):
+        segments = FrameCleaner.split_into_segments(total_frames=500, max_frames=180, overlap=16)
+        covered = set()
+        for start, end in segments:
+            covered.update(range(start, end))
+        assert covered == set(range(500))
+
+
+class TestOverlapBlending:
+    def test_blend_two_segments_linear_crossfade(self):
+        seg1 = np.full((20, 4, 4, 3), 100, dtype=np.uint8)
+        seg2 = np.full((20, 4, 4, 3), 200, dtype=np.uint8)
+        segments = [(0, 20), (12, 32)]
+        result = FrameCleaner.blend_segments([seg1, seg2], segments, total_frames=32)
+        assert result.shape == (32, 4, 4, 3)
+        assert np.all(result[0] == 100)
+        assert np.all(result[11] == 100)
+        assert np.all(result[20] == 200)
+        assert np.all(result[31] == 200)
+        mid_val = result[16, 0, 0, 0]
+        assert 140 <= mid_val <= 160
+
+    def test_single_segment_no_blending(self):
+        seg = np.full((10, 4, 4, 3), 128, dtype=np.uint8)
+        result = FrameCleaner.blend_segments([seg], [(0, 10)], total_frames=10)
+        assert np.array_equal(result, seg)
