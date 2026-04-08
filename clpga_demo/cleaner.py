@@ -75,6 +75,9 @@ class FrameCleaner:
             size_radius = size * self._corridor_multiplier
             speed_radius = speed * self._corridor_speed_scale * self._radius_scale
             radius = max(size_radius, speed_radius)
+            # Cap corridor to avoid excessive SAM3 processing
+            max_radius = min(frame_w, frame_h) / 2
+            radius = min(radius, max_radius)
 
             x1 = max(0, int(cx - radius))
             y1 = max(0, int(cy - radius))
@@ -233,7 +236,7 @@ class FrameCleaner:
             # Use a point grid for segment-everything mode
             ch = corridor.y2 - corridor.y1
             cw = corridor.x2 - corridor.x1
-            grid_step = 32
+            grid_step = max(32, min(ch, cw) // 8)  # Adaptive grid, max ~64 points
             ys_grid = list(range(grid_step // 2, ch, grid_step))
             xs_grid = list(range(grid_step // 2, cw, grid_step))
             points = [[x, y] for y in ys_grid for x in xs_grid]
@@ -244,37 +247,122 @@ class FrameCleaner:
             if not results or results[0].masks is None or len(results[0].masks) == 0:
                 continue
 
-            # Get masks and map back to full frame coordinates
-            crop_masks = results[0].masks.data.cpu().numpy().astype(bool)
-            full_masks: list[np.ndarray] = []
-            for m in crop_masks:
-                full_mask = np.zeros((frame_h, frame_w), dtype=bool)
-                ch = corridor.y2 - corridor.y1
-                cw = corridor.x2 - corridor.x1
+            # Work in crop-space to avoid full-frame mask allocation
+            import cv2 as _cv2
+            crop_masks_raw = results[0].masks.data.cpu().numpy().astype(bool)
+            crop_masks: list[np.ndarray] = []
+            for m in crop_masks_raw:
                 if m.shape != (ch, cw):
-                    import cv2
-                    m_resized = cv2.resize(m.astype(np.uint8), (cw, ch), interpolation=cv2.INTER_NEAREST).astype(bool)
-                else:
-                    m_resized = m
-                full_mask[corridor.y1:corridor.y2, corridor.x1:corridor.x2] = m_resized
-                full_masks.append(full_mask)
+                    m = _cv2.resize(m.astype(np.uint8), (cw, ch), interpolation=_cv2.INTER_NEAREST).astype(bool)
+                crop_masks.append(m)
+            del crop_masks_raw  # Free GPU tensor memory
 
-            # Identify ball mask
-            ball_idx = self.identify_ball_mask(full_masks, traj_point, median_ball_size)
-            ball_mask = full_masks[ball_idx] if ball_idx is not None else None
+            # Identify ball mask in crop-space (translate trajectory to crop coords)
+            crop_traj = (traj_point[0] - corridor.x1, traj_point[1] - corridor.y1)
+            ball_idx = self._identify_ball_mask_crop(crop_masks, crop_traj, median_ball_size)
+            ball_mask_crop = crop_masks[ball_idx] if ball_idx is not None else None
 
-            # Distractor masks = everything except ball
-            distractor_masks = [m for j, m in enumerate(full_masks) if j != ball_idx]
+            # Build distractor mask in crop-space (merge all except ball)
+            distractor_merged = np.zeros((ch, cw), dtype=bool)
+            for j, m in enumerate(crop_masks):
+                if j != ball_idx:
+                    distractor_merged |= m
+            del crop_masks  # Free mask memory immediately
 
-            quadmasks[i] = self.generate_quadmask_frame(
-                ball_mask=ball_mask,
-                distractor_masks=distractor_masks,
+            # Build quadmask for this frame directly from crop-space data
+            quadmasks[i] = self._generate_quadmask_from_crop(
+                ball_mask_crop=ball_mask_crop,
+                distractor_merged_crop=distractor_merged,
                 corridor=corridor,
                 frame_h=frame_h,
                 frame_w=frame_w,
             )
+            del distractor_merged, ball_mask_crop  # Free immediately
+
+            if i % 50 == 0:
+                logger.info("Quadmask generation: frame %d / %d", i, num_frames)
 
         return quadmasks
+
+    def _identify_ball_mask_crop(
+        self,
+        crop_masks: list[np.ndarray],
+        crop_trajectory_point: tuple[float, float],
+        median_ball_size: float,
+    ) -> int | None:
+        """Identify ball mask working in crop-space coordinates."""
+        if not crop_masks:
+            return None
+
+        tx, ty = crop_trajectory_point
+        candidates: list[tuple[float, int]] = []
+
+        for i, mask in enumerate(crop_masks):
+            ys, xs = np.where(mask)
+            if len(xs) == 0:
+                continue
+
+            cx = float(xs.mean())
+            cy = float(ys.mean())
+            min_x, max_x = float(xs.min()), float(xs.max())
+            min_y, max_y = float(ys.min()), float(ys.max())
+            w = max_x - min_x + 1
+            h = max_y - min_y + 1
+
+            short = min(w, h)
+            if short <= 0 or max(w, h) / short > self._max_aspect_ratio:
+                continue
+
+            mask_size = (w + h) / 2
+            if median_ball_size > 0:
+                ratio = mask_size / median_ball_size
+                if ratio > self._max_size_ratio or ratio < 1.0 / self._max_size_ratio:
+                    continue
+
+            dist = float(np.sqrt((cx - tx) ** 2 + (cy - ty) ** 2))
+            candidates.append((dist, i))
+
+        if not candidates:
+            return None
+        candidates.sort()
+        return candidates[0][1]
+
+    def _generate_quadmask_from_crop(
+        self,
+        ball_mask_crop: np.ndarray | None,
+        distractor_merged_crop: np.ndarray,
+        corridor: Corridor,
+        frame_h: int,
+        frame_w: int,
+    ) -> np.ndarray:
+        """Generate a full-frame quadmask from crop-space masks efficiently."""
+        quadmask = np.full((frame_h, frame_w), 255, dtype=np.uint8)
+
+        if not distractor_merged_crop.any():
+            return quadmask
+
+        ch = corridor.y2 - corridor.y1
+        cw = corridor.x2 - corridor.x1
+
+        # Dilate in crop-space
+        dilated = distractor_merged_crop.copy()
+        if self._mask_dilation_px > 0:
+            dilated = binary_dilation(dilated, iterations=self._mask_dilation_px)
+
+        # Set distractor pixels to 0 within the corridor
+        crop_quadmask = np.full((ch, cw), 127, dtype=np.uint8)  # Corridor interior = affected
+        crop_quadmask[dilated] = 0  # Distractor = remove
+
+        # Ball mask stays 255
+        if ball_mask_crop is not None:
+            crop_quadmask[ball_mask_crop] = 255
+
+        # Non-distractor, non-ball corridor pixels stay 127
+
+        # Place crop quadmask into full frame
+        quadmask[corridor.y1:corridor.y2, corridor.x1:corridor.x2] = crop_quadmask
+
+        return quadmask
 
     def clean_segments(
         self,
