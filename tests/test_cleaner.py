@@ -274,7 +274,7 @@ class TestOverlapBlending:
         assert np.array_equal(result, seg)
 
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 
 
 class TestCleanSegments:
@@ -332,3 +332,67 @@ class TestCleanSegments:
 
         mock_void.inpaint.assert_not_called()
         assert np.array_equal(result[0], video_frames)
+
+
+class TestGenerateQuadmasks:
+    def test_generates_quadmask_array(self):
+        """generate_quadmasks should return (T, H, W) uint8 array."""
+        mock_sam = MagicMock()
+        mock_result = MagicMock()
+        ball_mask = np.zeros((480, 640), dtype=bool)
+        ball_mask[95:105, 95:105] = True
+        distractor_mask = np.zeros((480, 640), dtype=bool)
+        distractor_mask[140:160, 140:160] = True
+        mock_result.masks.data.cpu.return_value.numpy.return_value = np.stack([ball_mask, distractor_mask])
+        mock_sam.return_value = [mock_result]
+
+        cleaner = FrameCleaner(
+            sam3_model=mock_sam,
+            void_model=None,
+            corridor_config={
+                "corridor_multiplier": 4.0,
+                "corridor_speed_scale": 1.5,
+                "radius_scale": 4.0,
+                "mask_dilation_px": 3,
+                "max_aspect_ratio": 2.0,
+                "max_size_ratio": 2.0,
+            },
+        )
+
+        video_frames = np.zeros((3, 480, 640, 3), dtype=np.uint8)
+        corridors = [
+            Corridor(center_x=100, center_y=100, radius=80, x1=20, y1=20, x2=180, y2=180),
+            Corridor(center_x=100, center_y=100, radius=80, x1=20, y1=20, x2=180, y2=180),
+            None,
+        ]
+        trajectory = [(100.0, 100.0), (100.0, 100.0), None]
+        median_ball_size = 10.0
+
+        quadmasks = cleaner.generate_quadmasks(video_frames, corridors, trajectory, median_ball_size)
+
+        assert quadmasks.shape == (3, 480, 640)
+        assert quadmasks.dtype == np.uint8
+        assert np.all(quadmasks[2] == 255)
+
+    def test_no_corridor_produces_all_255(self):
+        """Frames with no corridor should have all-255 quadmask."""
+        cleaner = FrameCleaner(
+            sam3_model=None,
+            void_model=None,
+            corridor_config={
+                "corridor_multiplier": 4.0,
+                "corridor_speed_scale": 1.5,
+                "radius_scale": 4.0,
+                "mask_dilation_px": 3,
+                "max_aspect_ratio": 2.0,
+                "max_size_ratio": 2.0,
+            },
+        )
+
+        video_frames = np.zeros((2, 100, 100, 3), dtype=np.uint8)
+        corridors = [None, None]
+        trajectory = [None, None]
+
+        quadmasks = cleaner.generate_quadmasks(video_frames, corridors, trajectory, 10.0)
+
+        assert np.all(quadmasks == 255)

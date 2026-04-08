@@ -183,6 +183,74 @@ class FrameCleaner:
 
         return quadmask
 
+    def generate_quadmasks(
+        self,
+        video_frames: np.ndarray,
+        corridors: list[Corridor | None],
+        trajectory: list[tuple[float, float] | None],
+        median_ball_size: float,
+    ) -> np.ndarray:
+        """Generate quadmask array for all frames using SAM3 segment-everything.
+
+        Args:
+            video_frames: (T, H, W, 3) uint8 BGR frames.
+            corridors: Per-frame Corridor or None.
+            trajectory: Per-frame (x, y) or None.
+            median_ball_size: Median ball size for mask validation.
+
+        Returns:
+            (T, H, W) uint8 quadmask array.
+        """
+        num_frames, frame_h, frame_w = video_frames.shape[:3]
+        quadmasks = np.full((num_frames, frame_h, frame_w), 255, dtype=np.uint8)
+
+        for i in range(num_frames):
+            corridor = corridors[i]
+            traj_point = trajectory[i]
+
+            if corridor is None or traj_point is None:
+                continue
+
+            # Run SAM3 segment-everything on the corridor region
+            frame = video_frames[i]
+            crop = frame[corridor.y1:corridor.y2, corridor.x1:corridor.x2]
+
+            results = self._sam3_model(crop)
+            if not results or results[0].masks is None or len(results[0].masks) == 0:
+                continue
+
+            # Get masks and map back to full frame coordinates
+            crop_masks = results[0].masks.data.cpu().numpy().astype(bool)
+            full_masks: list[np.ndarray] = []
+            for m in crop_masks:
+                full_mask = np.zeros((frame_h, frame_w), dtype=bool)
+                ch = corridor.y2 - corridor.y1
+                cw = corridor.x2 - corridor.x1
+                if m.shape != (ch, cw):
+                    import cv2
+                    m_resized = cv2.resize(m.astype(np.uint8), (cw, ch), interpolation=cv2.INTER_NEAREST).astype(bool)
+                else:
+                    m_resized = m
+                full_mask[corridor.y1:corridor.y2, corridor.x1:corridor.x2] = m_resized
+                full_masks.append(full_mask)
+
+            # Identify ball mask
+            ball_idx = self.identify_ball_mask(full_masks, traj_point, median_ball_size)
+            ball_mask = full_masks[ball_idx] if ball_idx is not None else None
+
+            # Distractor masks = everything except ball
+            distractor_masks = [m for j, m in enumerate(full_masks) if j != ball_idx]
+
+            quadmasks[i] = self.generate_quadmask_frame(
+                ball_mask=ball_mask,
+                distractor_masks=distractor_masks,
+                corridor=corridor,
+                frame_h=frame_h,
+                frame_w=frame_w,
+            )
+
+        return quadmasks
+
     def clean_segments(
         self,
         video_frames: np.ndarray,
