@@ -96,3 +96,67 @@ class TestCorridorComputation:
         assert corridors[0] is not None
         assert corridors[1] is None
         assert corridors[2] is not None
+
+
+class TestBallMaskIdentification:
+    def _make_cleaner(self):
+        return FrameCleaner(
+            sam3_model=None,
+            void_model=None,
+            corridor_config={
+                "corridor_multiplier": 4.0,
+                "corridor_speed_scale": 1.5,
+                "radius_scale": 4.0,
+                "mask_dilation_px": 5,
+                "max_aspect_ratio": 2.0,
+                "max_size_ratio": 2.0,
+            },
+        )
+
+    def test_selects_closest_mask_to_trajectory(self):
+        """Should pick the mask whose centroid is closest to trajectory point."""
+        cleaner = self._make_cleaner()
+        mask_near = np.zeros((480, 640), dtype=bool)
+        mask_near[90:110, 90:110] = True
+        mask_far = np.zeros((480, 640), dtype=bool)
+        mask_far[290:310, 290:310] = True
+        masks = [mask_near, mask_far]
+        result = cleaner.identify_ball_mask(masks, (100.0, 100.0), 20.0)
+        assert result == 0
+
+    def test_rejects_mask_with_bad_aspect_ratio(self):
+        """Closest mask should be rejected if aspect ratio is too large."""
+        cleaner = self._make_cleaner()
+        mask_elongated = np.zeros((480, 640), dtype=bool)
+        mask_elongated[99:100, 80:120] = True  # 1px tall, 40px wide
+        mask_round = np.zeros((480, 640), dtype=bool)
+        mask_round[190:210, 190:210] = True
+        masks = [mask_elongated, mask_round]
+        result = cleaner.identify_ball_mask(masks, (100.0, 100.0), 20.0)
+        assert result == 1
+
+    def test_rejects_mask_with_bad_size_ratio(self):
+        """Closest mask should be rejected if too large compared to median ball size."""
+        cleaner = self._make_cleaner()
+        mask_big = np.zeros((480, 640), dtype=bool)
+        mask_big[50:150, 50:150] = True  # 100x100 vs median 20
+        mask_right = np.zeros((480, 640), dtype=bool)
+        mask_right[195:205, 195:205] = True
+        masks = [mask_big, mask_right]
+        result = cleaner.identify_ball_mask(masks, (100.0, 100.0), 20.0)
+        assert result == 1
+
+    def test_returns_none_when_no_valid_masks(self):
+        """Should return None if all masks fail validation."""
+        cleaner = self._make_cleaner()
+        mask_huge = np.zeros((480, 640), dtype=bool)
+        mask_huge[0:200, 0:200] = True
+        masks = [mask_huge]
+        result = cleaner.identify_ball_mask(masks, (100.0, 100.0), 20.0)
+        assert result is None
+
+    def test_empty_masks_returns_none(self):
+        """Should return None for empty mask list."""
+        cleaner = self._make_cleaner()
+        result = cleaner.identify_ball_mask([], (100.0, 100.0), 20.0)
+        assert result is None
