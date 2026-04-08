@@ -174,23 +174,24 @@ class VoidModelWrapper:
         if not self._loaded:
             self.load()
 
-        self._ensure_code()
-        from videox_fun.utils.utils import get_video_mask_input, save_videos_grid
-
         T_frames, orig_H, orig_W, _ = video_segment.shape
 
-        # Prepare input video tensor: (1, T, C, H, W) float, range [-1, 1]
-        # Convert BGR -> RGB, resize to sample size, normalize
+        # Match get_video_mask_input format exactly:
+        # input_video: (1, C, T, H, W) float [0, 1]
+        # input_mask: (1, 1, T, H, W) float [0, 1]
+
+        # Prepare video: BGR -> RGB, resize, (T,H,W,C) -> (C,T,H,W) -> (1,C,T,H,W)
         frames_rgb = []
         for i in range(T_frames):
             frame_rgb = cv2.cvtColor(video_segment[i], cv2.COLOR_BGR2RGB)
             frame_resized = cv2.resize(frame_rgb, (_SAMPLE_SIZE[1], _SAMPLE_SIZE[0]))
             frames_rgb.append(frame_resized)
         video_np = np.stack(frames_rgb)  # (T, H, W, 3)
-        video_tensor = torch.from_numpy(video_np).float() / 127.5 - 1.0  # [-1, 1]
-        video_tensor = video_tensor.permute(0, 3, 1, 2).unsqueeze(0)  # (1, T, C, H, W)
+        video_tensor = torch.from_numpy(video_np).permute(3, 0, 1, 2).float() / 255.0  # (C, T, H, W) [0,1]
+        video_tensor = video_tensor.unsqueeze(0)  # (1, C, T, H, W)
 
-        # Prepare mask tensor: (1, T, 1, H, W) float
+        # Prepare mask: resize, quantize quadmask values, invert (void-model convention),
+        # then (T, H, W) -> (1, 1, T, H, W) [0, 1]
         masks_resized = []
         for i in range(T_frames):
             mask_resized = cv2.resize(
@@ -198,10 +199,18 @@ class VoidModelWrapper:
                 interpolation=cv2.INTER_NEAREST,
             )
             masks_resized.append(mask_resized)
-        mask_np = np.stack(masks_resized)  # (T, H, W)
-        # Convert quadmask to binary: 0 = inpaint (remove), 1 = keep
-        mask_binary = (mask_np > 128).astype(np.float32)
-        mask_tensor = torch.from_numpy(mask_binary).unsqueeze(0).unsqueeze(2)  # (1, T, 1, H, W)
+        mask_np = np.stack(masks_resized).astype(np.float32)  # (T, H, W)
+
+        # Quantize to quadmask values (matching void-model's get_video_mask_input)
+        mask_tensor = torch.from_numpy(mask_np)
+        mask_tensor = torch.where(mask_tensor <= 31, 0, mask_tensor)
+        mask_tensor = torch.where((mask_tensor > 31) * (mask_tensor <= 95), 63, mask_tensor)
+        mask_tensor = torch.where((mask_tensor > 95) * (mask_tensor <= 191), 127, mask_tensor)
+        mask_tensor = torch.where(mask_tensor > 191, 255, mask_tensor)
+        # Invert: void-model convention is 0=keep, 255=remove (opposite of our quadmask)
+        mask_tensor = 255 - mask_tensor
+        # Normalize to [0, 1] and reshape to (1, 1, T, H, W)
+        mask_tensor = (mask_tensor / 255.0).unsqueeze(0).unsqueeze(0)  # (1, 1, T, H, W)
 
         negative_prompt = (
             "The video is not of a high quality, it has a low resolution. "
@@ -233,25 +242,24 @@ class VoidModelWrapper:
             ).videos  # (1, T, C, H, W) or (1, C, T, H, W)
 
         # Convert output back to numpy BGR frames at original resolution
-        if sample.dim() == 5:
-            # Expected shape: (1, T, C, H, W) or (1, C, T, H, W)
-            if sample.shape[2] == 3:
-                # (1, T, C, H, W) -> (T, C, H, W)
-                out_tensor = sample[0]
-            else:
-                # (1, C, T, H, W) -> (T, C, H, W)
-                out_tensor = sample[0].permute(1, 0, 2, 3)
+        # Pipeline output .videos is typically (B, C, T, H, W) in [0, 1]
+        s = sample[0]  # Remove batch dim -> (C, T, H, W)
+        if s.shape[0] == 3:
+            # (C, T, H, W) -> (T, H, W, C)
+            out_tensor = s.permute(1, 2, 3, 0)
+        elif s.shape[1] == 3:
+            # (T, C, H, W) -> (T, H, W, C)
+            out_tensor = s.permute(0, 2, 3, 1)
         else:
-            out_tensor = sample
+            out_tensor = s
 
-        # Denormalize from [-1, 1] to [0, 255]
-        out_np = ((out_tensor.cpu().float().clamp(-1, 1) + 1) * 127.5).numpy().astype(np.uint8)
+        # Denormalize from [0, 1] to [0, 255]
+        out_np = (out_tensor.cpu().float().clamp(0, 1) * 255).numpy().astype(np.uint8)
 
-        # Convert (T, C, H, W) RGB -> (T, H, W, C) BGR and resize to original
+        # Convert (T, H, W, C) RGB -> BGR and resize to original
         result_frames = []
         for i in range(out_np.shape[0]):
-            frame_rgb = out_np[i].transpose(1, 2, 0)  # (H, W, C)
-            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            frame_bgr = cv2.cvtColor(out_np[i], cv2.COLOR_RGB2BGR)
             if frame_bgr.shape[:2] != (orig_H, orig_W):
                 frame_bgr = cv2.resize(frame_bgr, (orig_W, orig_H))
             result_frames.append(frame_bgr)
