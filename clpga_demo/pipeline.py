@@ -26,56 +26,63 @@ def _retrack_cleaned(
     src_h: int,
     fps: float,
 ) -> list[tuple[float, float] | None]:
-    """Re-run detection and tracking on cleaned frames."""
-    from ultralytics.models.sam import SAM3VideoSemanticPredictor
+    """Re-run detection and tracking on cleaned frames.
 
+    Writes cleaned frames to a temp video file, then uses the standard
+    track_video pipeline (SAM3VideoSemanticPredictor) which requires a video source.
+    """
+    import tempfile
+
+    # Write cleaned frames to a temporary video file
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    h, w = cleaned_frames.shape[1:3]
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(tmp_path, fourcc, fps, (w, h))
+    for i in range(len(cleaned_frames)):
+        writer.write(cleaned_frames[i])
+    writer.release()
+
+    # Re-run standard tracking pipeline on cleaned video
     positions: list[tuple[float, float] | None] = []
     selected_obj_id: int | None = None
     frames_since_lost = 0
 
-    for frame_idx in range(len(cleaned_frames)):
-        frame = cleaned_frames[frame_idx]
+    try:
+        for frame_idx, orig_frame, boxes in track_video(tmp_path, model=model, confidence=confidence, text=text):
+            result = select_ball(boxes, src_w, src_h, preferred_obj_id=selected_obj_id, frame_idx=frame_idx)
 
-        # Run SAM3 single-frame detection on cleaned frame
-        predictor = SAM3VideoSemanticPredictor(overrides=dict(
-            conf=confidence, task="segment", mode="predict", model=model, half=True, save=False,
-        ))
-        results = list(predictor(source=frame, text=text or ["golf ball"], stream=True))
-        boxes = (
-            results[0].boxes.data.cpu().numpy()
-            if results and results[0].boxes is not None and len(results[0].boxes) > 0
-            else np.empty((0, 7))
-        )
-
-        result = select_ball(boxes, src_w, src_h, preferred_obj_id=selected_obj_id, frame_idx=frame_idx)
-
-        accepted = False
-        if result is not None:
-            if frames_since_lost > 0 and tracker.has_position:
-                if not tracker.accept((result.center_x, result.center_y), result.bbox):
-                    result = None
+            accepted = False
+            if result is not None:
+                if frames_since_lost > 0 and tracker.has_position:
+                    if not tracker.accept((result.center_x, result.center_y), result.bbox):
+                        result = None
+                    else:
+                        accepted = True
                 else:
                     accepted = True
-            else:
-                accepted = True
 
-        if accepted and result is not None:
-            if selected_obj_id is None:
-                selected_obj_id = result.obj_id
-            pos = tracker.update((result.center_x, result.center_y), result.bbox)
-            positions.append(pos)
-            frames_since_lost = 0
-        else:
-            if tracker.has_position:
-                pos = tracker.predict()
+            if accepted and result is not None:
+                if selected_obj_id is None:
+                    selected_obj_id = result.obj_id
+                pos = tracker.update((result.center_x, result.center_y), result.bbox)
                 positions.append(pos)
-            else:
-                positions.append(None)
-            frames_since_lost += 1
-            if fps > 0 and frames_since_lost > fps * 3:
-                selected_obj_id = None
-                tracker.reset()
                 frames_since_lost = 0
+            else:
+                if tracker.has_position:
+                    pos = tracker.predict()
+                    positions.append(pos)
+                else:
+                    positions.append(None)
+                frames_since_lost += 1
+                if fps > 0 and frames_since_lost > fps * 3:
+                    selected_obj_id = None
+                    tracker.reset()
+                    frames_since_lost = 0
+    finally:
+        import os
+        os.unlink(tmp_path)
 
     return positions
 
