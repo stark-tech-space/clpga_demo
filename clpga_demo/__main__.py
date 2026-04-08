@@ -28,6 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kalman-process-noise", type=float, default=None, help="Kalman process noise")
     parser.add_argument("--kalman-measurement-noise", type=float, default=None, help="Kalman measurement noise")
     parser.add_argument("--kalman-gate", type=float, default=None, help="Kalman gate threshold")
+    parser.add_argument("--clean", action="store_true", default=False, help="Enable distractor removal cleaning pass")
+    parser.add_argument("--corridor-multiplier", type=float, default=None, help="Corridor width multiplier (ball sizes)")
+    parser.add_argument("--mask-dilation", type=int, default=None, help="Mask dilation in pixels")
+    parser.add_argument("--void-model-dir", type=str, default=None, help="Path to pre-downloaded void-model")
+    parser.add_argument("--clean-prompt", type=str, default=None, help="Scene description for void-model inpainting")
     return parser
 
 
@@ -49,12 +54,20 @@ def resolve_args(args: argparse.Namespace) -> dict:
         "kalman_process_noise": "kalman_process_noise",
         "kalman_measurement_noise": "kalman_measurement_noise",
         "kalman_gate": "kalman_gate_threshold",
+        "corridor_multiplier": "corridor_multiplier",
+        "mask_dilation": "mask_dilation_px",
+        "void_model_dir": "void_model_dir",
+        "clean_prompt": "clean_prompt",
     }
 
     for cli_key, preset_key in cli_to_preset.items():
-        cli_val = getattr(args, cli_key)
+        cli_val = getattr(args, cli_key, None)
         if cli_val is not None:
             preset[preset_key] = cli_val
+
+    # Handle boolean --clean flag separately
+    if getattr(args, "clean", False):
+        preset["clean"] = True
 
     return preset
 

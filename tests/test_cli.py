@@ -73,7 +73,7 @@ class TestResolveArgs:
         assert resolved["confidence"] == 0.15
         assert resolved["text"] == ["golf ball on green"]
         assert resolved["momentum_history_size"] == 5
-        assert resolved["momentum_radius_scale"] == 2.0
+        assert resolved["momentum_radius_scale"] == 15.0
 
     def test_cli_override_beats_preset(self):
         parser = build_parser()
@@ -139,3 +139,47 @@ class TestTrackerCLI:
         assert resolved["kalman_process_noise"] == 2.0
         # Other putt values preserved
         assert resolved["kalman_measurement_noise"] == 1.0
+
+
+class TestCleanCLI:
+    def test_clean_flag_parsed(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--clean"])
+        assert args.clean is True
+
+    def test_clean_flag_default_false(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4"])
+        assert args.clean is False
+
+    def test_corridor_multiplier_parsed(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--corridor-multiplier", "5.0"])
+        assert args.corridor_multiplier == 5.0
+
+    def test_mask_dilation_parsed(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--mask-dilation", "8"])
+        assert args.mask_dilation == 8
+
+    def test_void_model_dir_parsed(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--void-model-dir", "/models/void"])
+        assert args.void_model_dir == "/models/void"
+
+    def test_clean_prompt_parsed(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--clean-prompt", "driving range"])
+        assert args.clean_prompt == "driving range"
+
+    def test_clean_flag_resolves_to_preset(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--clean"])
+        resolved = resolve_args(args)
+        assert resolved["clean"] is True
+
+    def test_corridor_multiplier_override(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--corridor-multiplier", "6.0"])
+        resolved = resolve_args(args)
+        assert resolved["corridor_multiplier"] == 6.0

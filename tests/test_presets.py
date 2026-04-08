@@ -17,7 +17,7 @@ class TestGetPreset:
         assert preset["confidence"] == 0.15
         assert preset["text"] == ["golf ball on green"]
         assert preset["momentum_history_size"] == 5
-        assert preset["momentum_radius_scale"] == 2.0
+        assert preset["momentum_radius_scale"] == 15.0
         assert "smoothing_alpha" not in preset
 
     def test_raises_on_unknown_preset(self):
@@ -44,3 +44,25 @@ class TestTrackerPresets:
         assert preset["kalman_process_noise"] == 0.5
         assert preset["kalman_measurement_noise"] == 1.0
         assert preset["kalman_gate_threshold"] == 9.0
+
+
+class TestCleaningPresets:
+    def test_default_preset_has_clean_false(self):
+        from clpga_demo.presets import get_preset
+        preset = get_preset("default")
+        assert preset["clean"] is False
+
+    def test_default_preset_has_corridor_multiplier(self):
+        from clpga_demo.presets import get_preset
+        preset = get_preset("default")
+        assert preset["corridor_multiplier"] == 4.0
+
+    def test_default_preset_has_segment_max_frames(self):
+        from clpga_demo.presets import get_preset
+        preset = get_preset("default")
+        assert preset["segment_max_frames"] == 180
+
+    def test_default_preset_has_clean_prompt(self):
+        from clpga_demo.presets import get_preset
+        preset = get_preset("default")
+        assert preset["clean_prompt"] == "golf course background"
