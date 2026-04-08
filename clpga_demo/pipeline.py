@@ -199,6 +199,7 @@ def process_video(
 
         void_wrapper = VoidModelWrapper(model_dir=void_model_dir)
         void_wrapper.download_if_needed()
+        void_wrapper.load()
 
         corridor_config = {
             "corridor_multiplier": corridor_multiplier,

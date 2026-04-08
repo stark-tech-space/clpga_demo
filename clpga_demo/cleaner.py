@@ -33,7 +33,13 @@ class FrameCleaner:
         void_model,
         corridor_config: dict,
     ) -> None:
-        self._sam3_model = sam3_model
+        # sam3_model can be a path string or an already-loaded model
+        if isinstance(sam3_model, str):
+            self._sam3_model_path = sam3_model
+            self._sam3_model = None  # Lazy-load on first use
+        else:
+            self._sam3_model_path = None
+            self._sam3_model = sam3_model
         self._void_model = void_model
         self._corridor_multiplier = corridor_config.get("corridor_multiplier", 4.0)
         self._corridor_speed_scale = corridor_config.get("corridor_speed_scale", 1.5)
@@ -41,6 +47,14 @@ class FrameCleaner:
         self._mask_dilation_px = corridor_config.get("mask_dilation_px", 5)
         self._max_aspect_ratio = corridor_config.get("max_aspect_ratio", 2.0)
         self._max_size_ratio = corridor_config.get("max_size_ratio", 2.0)
+
+    def _get_sam3(self):
+        """Lazy-load SAM3 model if needed."""
+        if self._sam3_model is None:
+            from ultralytics import SAM
+            logger.info("Loading SAM3 model from %s ...", self._sam3_model_path)
+            self._sam3_model = SAM(self._sam3_model_path)
+        return self._sam3_model
 
     def compute_corridors(
         self,
@@ -215,7 +229,18 @@ class FrameCleaner:
             frame = video_frames[i]
             crop = frame[corridor.y1:corridor.y2, corridor.x1:corridor.x2]
 
-            results = self._sam3_model(crop)
+            sam = self._get_sam3()
+            # Use a point grid for segment-everything mode
+            ch = corridor.y2 - corridor.y1
+            cw = corridor.x2 - corridor.x1
+            grid_step = 32
+            ys_grid = list(range(grid_step // 2, ch, grid_step))
+            xs_grid = list(range(grid_step // 2, cw, grid_step))
+            points = [[x, y] for y in ys_grid for x in xs_grid]
+            labels = [1] * len(points)
+            if not points:
+                continue
+            results = sam(crop, points=points, labels=labels)
             if not results or results[0].masks is None or len(results[0].masks) == 0:
                 continue
 

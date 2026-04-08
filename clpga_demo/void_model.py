@@ -2,20 +2,28 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import subprocess
-import tempfile
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
+import torch
 from huggingface_hub import snapshot_download
 
 logger = logging.getLogger(__name__)
 
 _VOID_REPO = "netflix/void-model"
 _BASE_REPO = "alibaba-pai/CogVideoX-Fun-V1.5-5b-InP"
+_VOID_CODE_REPO = "https://github.com/netflix/void-model.git"
+
+# Default inference settings matching VOID notebook
+_SAMPLE_SIZE = (384, 672)  # (H, W)
+_MAX_VIDEO_LENGTH = 197
+_TEMPORAL_WINDOW_SIZE = 85
+_NUM_INFERENCE_STEPS = 50
+_GUIDANCE_SCALE = 1.0
+_SEED = 42
 
 
 class VoidModelWrapper:
@@ -26,6 +34,9 @@ class VoidModelWrapper:
         self._device = device
         self._base_model_dir: str | None = None
         self._void_dir: str | None = None
+        self._code_dir: str | None = None
+        self._pipe = None
+        self._generator = None
         self._loaded = False
 
     def download_if_needed(self) -> str:
@@ -51,6 +62,99 @@ class VoidModelWrapper:
 
         return self._void_dir
 
+    def _ensure_code(self) -> str:
+        """Ensure the void-model code repo is available and on sys.path."""
+        code_dir = Path.home() / ".cache" / "clpga" / "void-model-code"
+        if not (code_dir / "videox_fun").exists():
+            import subprocess
+
+            logger.info("Cloning void-model code repo ...")
+            subprocess.run(
+                ["git", "clone", "--depth", "1", _VOID_CODE_REPO, str(code_dir)],
+                check=True,
+                env={"GIT_LFS_SKIP_SMUDGE": "1", **__import__("os").environ},
+            )
+        self._code_dir = str(code_dir)
+        if self._code_dir not in sys.path:
+            sys.path.insert(0, self._code_dir)
+        return self._code_dir
+
+    def load(self) -> VoidModelWrapper:
+        """Load the void-model pipeline into GPU memory."""
+        if self._loaded:
+            return self
+
+        self._ensure_code()
+
+        base_path = self._base_model_dir or str(
+            Path.home() / ".cache" / "clpga" / "CogVideoX-Fun-V1.5-5b-InP"
+        )
+        void_ckpt = str(Path(self._void_dir) / "void_pass1.safetensors")
+
+        weight_dtype = torch.bfloat16
+
+        from safetensors.torch import load_file
+        from diffusers import DDIMScheduler
+        from videox_fun.models import (
+            AutoencoderKLCogVideoX,
+            CogVideoXTransformer3DModel,
+            T5EncoderModel,
+            T5Tokenizer,
+        )
+        from videox_fun.pipeline import CogVideoXFunInpaintPipeline
+        from videox_fun.utils.fp8_optimization import convert_weight_dtype_wrapper
+
+        logger.info("Loading VAE ...")
+        vae = AutoencoderKLCogVideoX.from_pretrained(
+            base_path, subfolder="vae"
+        ).to(weight_dtype)
+
+        logger.info("Loading transformer ...")
+        transformer = CogVideoXTransformer3DModel.from_pretrained(
+            base_path,
+            subfolder="transformer",
+            low_cpu_mem_usage=True,
+            use_vae_mask=True,
+        ).to(weight_dtype)
+
+        logger.info("Loading VOID checkpoint from %s ...", void_ckpt)
+        state_dict = load_file(void_ckpt)
+
+        # Handle channel dimension mismatch for VAE mask
+        param_name = "patch_embed.proj.weight"
+        if state_dict[param_name].size(1) != transformer.state_dict()[param_name].size(1):
+            latent_ch, feat_scale = 16, 8
+            feat_dim = latent_ch * feat_scale
+            new_weight = transformer.state_dict()[param_name].clone()
+            new_weight[:, :feat_dim] = state_dict[param_name][:, :feat_dim]
+            new_weight[:, -feat_dim:] = state_dict[param_name][:, -feat_dim:]
+            state_dict[param_name] = new_weight
+
+        m, u = transformer.load_state_dict(state_dict, strict=False)
+        logger.info("Loaded VOID weights (missing: %d, unexpected: %d)", len(m), len(u))
+
+        tokenizer = T5Tokenizer.from_pretrained(base_path, subfolder="tokenizer")
+        text_encoder = T5EncoderModel.from_pretrained(
+            base_path, subfolder="text_encoder", torch_dtype=weight_dtype
+        )
+        scheduler = DDIMScheduler.from_pretrained(base_path, subfolder="scheduler")
+
+        self._pipe = CogVideoXFunInpaintPipeline(
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
+            vae=vae,
+            transformer=transformer,
+            scheduler=scheduler,
+        )
+
+        convert_weight_dtype_wrapper(self._pipe.transformer, weight_dtype)
+        self._pipe.enable_model_cpu_offload(device=self._device)
+        self._generator = torch.Generator(device=self._device).manual_seed(_SEED)
+
+        self._loaded = True
+        logger.info("void-model pipeline ready.")
+        return self
+
     def inpaint(
         self,
         video_segment: np.ndarray,
@@ -60,92 +164,100 @@ class VoidModelWrapper:
         """Run void-model inpainting on a video segment.
 
         Args:
-            video_segment: (T, H, W, 3) uint8 RGB frames.
-            quadmask_segment: (T, H, W) uint8 mask (255=keep, 0=inpaint).
+            video_segment: (T, H, W, 3) uint8 BGR frames.
+            quadmask_segment: (T, H, W) uint8 quadmask (0=remove, 127=affected, 255=keep).
             prompt: Text prompt describing the background scene.
 
         Returns:
-            (T, H, W, 3) uint8 cleaned frames.
+            (T, H, W, 3) uint8 BGR cleaned frames.
         """
-        T, H, W, _ = video_segment.shape
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        fps = 30.0
+        if not self._loaded:
+            self.load()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            seq_dir = Path(tmpdir) / "seq"
-            seq_dir.mkdir()
-            output_dir = Path(tmpdir) / "output"
-            output_dir.mkdir()
+        self._ensure_code()
+        from videox_fun.utils.utils import get_video_mask_input, save_videos_grid
 
-            # Write input_video.mp4
-            input_video_path = str(seq_dir / "input_video.mp4")
-            writer = cv2.VideoWriter(input_video_path, fourcc, fps, (W, H))
-            for frame in video_segment:
-                writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-            writer.release()
+        T_frames, orig_H, orig_W, _ = video_segment.shape
 
-            # Write quadmask_0.mp4 (grayscale written as BGR single-channel video)
-            mask_video_path = str(seq_dir / "quadmask_0.mp4")
-            mask_writer = cv2.VideoWriter(mask_video_path, fourcc, fps, (W, H), isColor=False)
-            for mask_frame in quadmask_segment:
-                mask_writer.write(mask_frame)
-            mask_writer.release()
+        # Prepare input video tensor: (1, T, C, H, W) float, range [-1, 1]
+        # Convert BGR -> RGB, resize to sample size, normalize
+        frames_rgb = []
+        for i in range(T_frames):
+            frame_rgb = cv2.cvtColor(video_segment[i], cv2.COLOR_BGR2RGB)
+            frame_resized = cv2.resize(frame_rgb, (_SAMPLE_SIZE[1], _SAMPLE_SIZE[0]))
+            frames_rgb.append(frame_resized)
+        video_np = np.stack(frames_rgb)  # (T, H, W, 3)
+        video_tensor = torch.from_numpy(video_np).float() / 127.5 - 1.0  # [-1, 1]
+        video_tensor = video_tensor.permute(0, 3, 1, 2).unsqueeze(0)  # (1, T, C, H, W)
 
-            # Write prompt.json
-            prompt_path = seq_dir / "prompt.json"
-            prompt_path.write_text(json.dumps({"bg": prompt}))
+        # Prepare mask tensor: (1, T, 1, H, W) float
+        masks_resized = []
+        for i in range(T_frames):
+            mask_resized = cv2.resize(
+                quadmask_segment[i], (_SAMPLE_SIZE[1], _SAMPLE_SIZE[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
+            masks_resized.append(mask_resized)
+        mask_np = np.stack(masks_resized)  # (T, H, W)
+        # Convert quadmask to binary: 0 = inpaint (remove), 1 = keep
+        mask_binary = (mask_np > 128).astype(np.float32)
+        mask_tensor = torch.from_numpy(mask_binary).unsqueeze(0).unsqueeze(2)  # (1, T, 1, H, W)
 
-            # Build CLI command
-            void_dir = self._void_dir
-            base_model_dir = self._base_model_dir or ""
-            cmd = [
-                "python",
-                f"{void_dir}/inference/cogvideox_fun/predict_v2v.py",
-                f"--config={void_dir}/config/quadmask_cogvideox.py",
-                f"--config.data.data_rootdir={tmpdir}",
-                "--config.experiment.run_seqs=seq",
-                f"--config.experiment.save_path={str(output_dir)}",
-                f"--config.video_model.transformer_path={void_dir}/void_pass1.safetensors",
-                f"--config.video_model.model_name={base_model_dir}",
-            ]
+        negative_prompt = (
+            "The video is not of a high quality, it has a low resolution. "
+            "Watermark present in each frame. The background is solid. "
+            "Strange body and strange trajectory. Distortion. "
+        )
 
-            logger.info("Running void-model inference ...")
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"void-model inference failed (exit {result.returncode}): {result.stderr}"
-                )
+        # Clamp to max video length
+        effective_T = min(T_frames, _MAX_VIDEO_LENGTH)
+        video_input = video_tensor[:, :effective_T]
+        mask_input = mask_tensor[:, :effective_T]
 
-            # Discover output video
-            output_files = list(Path(output_dir).rglob("*.mp4"))
-            if not output_files:
-                raise RuntimeError("void-model produced no output video files.")
-            output_video_path = str(output_files[0])
+        logger.info("Running void-model inference on %d frames ...", effective_T)
+        with torch.no_grad():
+            sample = self._pipe(
+                prompt,
+                num_frames=min(effective_T, _TEMPORAL_WINDOW_SIZE),
+                negative_prompt=negative_prompt,
+                height=_SAMPLE_SIZE[0],
+                width=_SAMPLE_SIZE[1],
+                generator=self._generator,
+                guidance_scale=_GUIDANCE_SCALE,
+                num_inference_steps=_NUM_INFERENCE_STEPS,
+                video=video_input,
+                mask_video=mask_input,
+                strength=1.0,
+                use_trimask=True,
+                use_vae_mask=True,
+            ).videos  # (1, T, C, H, W) or (1, C, T, H, W)
 
-            # Read output frames
-            cap = cv2.VideoCapture(output_video_path)
-            if not cap.isOpened():
-                raise RuntimeError(f"Cannot open output video: {output_video_path}")
+        # Convert output back to numpy BGR frames at original resolution
+        if sample.dim() == 5:
+            # Expected shape: (1, T, C, H, W) or (1, C, T, H, W)
+            if sample.shape[2] == 3:
+                # (1, T, C, H, W) -> (T, C, H, W)
+                out_tensor = sample[0]
+            else:
+                # (1, C, T, H, W) -> (T, C, H, W)
+                out_tensor = sample[0].permute(1, 0, 2, 3)
+        else:
+            out_tensor = sample
 
-            frames: list[np.ndarray] = []
-            while True:
-                ok, frame = cap.read()
-                if not ok:
-                    break
-                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            cap.release()
+        # Denormalize from [-1, 1] to [0, 255]
+        out_np = ((out_tensor.cpu().float().clamp(-1, 1) + 1) * 127.5).numpy().astype(np.uint8)
 
-        if not frames:
-            raise RuntimeError("No frames read from void-model output video.")
+        # Convert (T, C, H, W) RGB -> (T, H, W, C) BGR and resize to original
+        result_frames = []
+        for i in range(out_np.shape[0]):
+            frame_rgb = out_np[i].transpose(1, 2, 0)  # (H, W, C)
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            if frame_bgr.shape[:2] != (orig_H, orig_W):
+                frame_bgr = cv2.resize(frame_bgr, (orig_W, orig_H))
+            result_frames.append(frame_bgr)
 
-        out = np.stack(frames, axis=0)  # (T', H', W', 3)
+        # Pad to original frame count if void-model returned fewer frames
+        while len(result_frames) < T_frames:
+            result_frames.append(video_segment[len(result_frames)].copy())
 
-        # Resize to original dimensions if needed
-        _T, out_H, out_W, _ = out.shape
-        if out_H != H or out_W != W:
-            resized = np.empty((len(frames), H, W, 3), dtype=np.uint8)
-            for i, f in enumerate(frames):
-                resized[i] = cv2.resize(f, (W, H), interpolation=cv2.INTER_LINEAR)
-            out = resized
-
-        return out.astype(np.uint8)
+        return np.stack(result_frames).astype(np.uint8)

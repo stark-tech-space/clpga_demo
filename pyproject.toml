@@ -12,7 +12,7 @@ dependencies = [
     "torchvision>=0.25.0",
     "clip",
     "timm>=1.0.25",
-    "huggingface-hub[cli]>=1.7.1",
+    "huggingface-hub>=0.34.0,<1.0",
 ]
 
 [project.scripts]
