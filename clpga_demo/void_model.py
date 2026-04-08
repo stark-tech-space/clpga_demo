@@ -218,27 +218,21 @@ class VoidModelWrapper:
             "Strange body and strange trajectory. Distortion. "
         )
 
-        # Ensure frame count is 4n+1 (VAE temporal requirement) and <= max
-        effective_T = min(T_frames, _MAX_VIDEO_LENGTH)
-        # Round down to nearest 4n+1
+        # void-model requires num_frames == video length, and both must be 4n+1.
+        # Clamp to temporal window size (85 frames) — the caller should split
+        # longer videos into overlapping segments of this size.
+        effective_T = min(T_frames, _TEMPORAL_WINDOW_SIZE)
+        # Round down to nearest 4n+1 for VAE compatibility
         effective_T = ((effective_T - 1) // 4) * 4 + 1
+
         video_input = video_tensor[:, :, :effective_T]
         mask_input = mask_tensor[:, :, :effective_T]
 
-        # num_frames controls the temporal window for the transformer
-        # The pipeline uses temporal multidiffusion to tile over longer videos
-        window_frames = min(effective_T, _TEMPORAL_WINDOW_SIZE)
-        # Window must also be 4n+1
-        window_frames = ((window_frames - 1) // 4) * 4 + 1
-
-        logger.info(
-            "Running void-model inference: %d frames, window=%d ...",
-            effective_T, window_frames,
-        )
+        logger.info("Running void-model inference on %d frames ...", effective_T)
         with torch.no_grad():
             sample = self._pipe(
                 prompt,
-                num_frames=window_frames,
+                num_frames=effective_T,
                 negative_prompt=negative_prompt,
                 height=_SAMPLE_SIZE[0],
                 width=_SAMPLE_SIZE[1],
