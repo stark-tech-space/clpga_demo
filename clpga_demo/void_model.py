@@ -218,16 +218,27 @@ class VoidModelWrapper:
             "Strange body and strange trajectory. Distortion. "
         )
 
-        # Clamp to max video length
+        # Ensure frame count is 4n+1 (VAE temporal requirement) and <= max
         effective_T = min(T_frames, _MAX_VIDEO_LENGTH)
-        video_input = video_tensor[:, :effective_T]
-        mask_input = mask_tensor[:, :effective_T]
+        # Round down to nearest 4n+1
+        effective_T = ((effective_T - 1) // 4) * 4 + 1
+        video_input = video_tensor[:, :, :effective_T]
+        mask_input = mask_tensor[:, :, :effective_T]
 
-        logger.info("Running void-model inference on %d frames ...", effective_T)
+        # num_frames controls the temporal window for the transformer
+        # The pipeline uses temporal multidiffusion to tile over longer videos
+        window_frames = min(effective_T, _TEMPORAL_WINDOW_SIZE)
+        # Window must also be 4n+1
+        window_frames = ((window_frames - 1) // 4) * 4 + 1
+
+        logger.info(
+            "Running void-model inference: %d frames, window=%d ...",
+            effective_T, window_frames,
+        )
         with torch.no_grad():
             sample = self._pipe(
                 prompt,
-                num_frames=min(effective_T, _TEMPORAL_WINDOW_SIZE),
+                num_frames=window_frames,
                 negative_prompt=negative_prompt,
                 height=_SAMPLE_SIZE[0],
                 width=_SAMPLE_SIZE[1],
@@ -239,7 +250,7 @@ class VoidModelWrapper:
                 strength=1.0,
                 use_trimask=True,
                 use_vae_mask=True,
-            ).videos  # (1, T, C, H, W) or (1, C, T, H, W)
+            ).videos
 
         # Convert output back to numpy BGR frames at original resolution
         # Pipeline output .videos is typically (B, C, T, H, W) in [0, 1]
