@@ -8,6 +8,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.ndimage import binary_dilation
 
+from clpga_demo.scene_analyzer import SceneAnalysis
+
 logger = logging.getLogger(__name__)
 
 
@@ -281,6 +283,109 @@ class FrameCleaner:
 
             if i % 50 == 0:
                 logger.info("Quadmask generation: frame %d / %d", i, num_frames)
+
+        return quadmasks
+
+    def generate_quadmasks_targeted(
+        self,
+        video_frames: np.ndarray,
+        corridors: list[Corridor | None],
+        scene_analysis: SceneAnalysis,
+        median_ball_size: float,
+    ) -> np.ndarray:
+        """Generate quadmasks using VLM-guided targeted SAM3 box prompts.
+
+        Args:
+            video_frames: (T, H, W, 3) uint8 BGR frames.
+            corridors: Per-frame Corridor or None.
+            scene_analysis: VLM analysis with ball bbox and distractor list.
+            median_ball_size: Median ball diameter for protection zone sizing.
+
+        Returns:
+            (T, H, W) uint8 quadmask array.
+        """
+        num_frames, frame_h, frame_w = video_frames.shape[:3]
+        quadmasks = np.full((num_frames, frame_h, frame_w), 255, dtype=np.uint8)
+
+        if not scene_analysis.distractors:
+            return quadmasks
+
+        # Compute ball protection zone (expanded bbox)
+        ball_protect = None
+        if scene_analysis.ball_bbox is not None:
+            bx1, by1, bx2, by2 = scene_analysis.ball_bbox
+            expand = int(2 * median_ball_size)
+            ball_protect = (
+                max(0, bx1 - expand),
+                max(0, by1 - expand),
+                min(frame_w, bx2 + expand),
+                min(frame_h, by2 + expand),
+            )
+
+        for i in range(num_frames):
+            corridor = corridors[i]
+            if corridor is None:
+                continue
+
+            sam = self._get_sam3()
+            frame = video_frames[i]
+            distractor_merged = np.zeros((frame_h, frame_w), dtype=bool)
+
+            for dist in scene_analysis.distractors:
+                dx1, dy1, dx2, dy2 = dist["bbox"]
+                # Expand bbox by 20% for movement tolerance
+                dw = dx2 - dx1
+                dh = dy2 - dy1
+                ex = int(dw * 0.2)
+                ey = int(dh * 0.2)
+                bx1_e = max(0, dx1 - ex)
+                by1_e = max(0, dy1 - ey)
+                bx2_e = min(frame_w, dx2 + ex)
+                by2_e = min(frame_h, dy2 + ey)
+
+                # SAM3 box prompt
+                results = sam(frame, bboxes=[[bx1_e, by1_e, bx2_e, by2_e]])
+                if not results or results[0].masks is None:
+                    continue
+                masks_data = results[0].masks.data.cpu().numpy()
+                if len(masks_data) == 0:
+                    continue
+
+                mask = masks_data[0].astype(bool)
+                if mask.shape != (frame_h, frame_w):
+                    import cv2
+                    mask = cv2.resize(
+                        mask.astype(np.uint8), (frame_w, frame_h),
+                        interpolation=cv2.INTER_NEAREST,
+                    ).astype(bool)
+
+                distractor_merged |= mask
+
+            # Apply ball protection zone
+            if ball_protect is not None:
+                px1, py1, px2, py2 = ball_protect
+                distractor_merged[py1:py2, px1:px2] = False
+
+            if not distractor_merged.any():
+                continue
+
+            # Build quadmask using existing generate_quadmask_frame
+            ball_mask = None
+            if ball_protect is not None:
+                ball_mask = np.zeros((frame_h, frame_w), dtype=bool)
+                px1, py1, px2, py2 = ball_protect
+                ball_mask[py1:py2, px1:px2] = True
+
+            quadmasks[i] = self.generate_quadmask_frame(
+                ball_mask=ball_mask,
+                distractor_masks=[distractor_merged],
+                corridor=corridor,
+                frame_h=frame_h,
+                frame_w=frame_w,
+            )
+
+            if i % 50 == 0:
+                logger.info("Targeted quadmask generation: frame %d / %d", i, num_frames)
 
         return quadmasks
 

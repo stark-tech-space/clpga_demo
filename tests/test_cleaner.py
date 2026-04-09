@@ -275,6 +275,7 @@ class TestOverlapBlending:
 
 
 from unittest.mock import patch, MagicMock, call
+from clpga_demo.scene_analyzer import SceneAnalysis
 
 
 class TestCleanSegments:
@@ -395,4 +396,123 @@ class TestGenerateQuadmasks:
 
         quadmasks = cleaner.generate_quadmasks(video_frames, corridors, trajectory, 10.0)
 
+        assert np.all(quadmasks == 255)
+
+
+class TestTargetedQuadmaskGeneration:
+    def test_no_distractors_returns_all_255(self):
+        """If Gemini found no distractors, all frames should be 255."""
+        cleaner = FrameCleaner(
+            sam3_model=None, void_model=None,
+            corridor_config={
+                "corridor_multiplier": 4.0, "corridor_speed_scale": 1.5,
+                "radius_scale": 4.0, "mask_dilation_px": 3,
+                "max_aspect_ratio": 2.0, "max_size_ratio": 2.0,
+            },
+        )
+        video_frames = np.zeros((5, 480, 640, 3), dtype=np.uint8)
+        corridors = [Corridor(100, 100, 80, 20, 20, 180, 180)] * 5
+        analysis = SceneAnalysis(ball_bbox=(95, 95, 105, 105), distractors=[], scene_description="clean green")
+        quadmasks = cleaner.generate_quadmasks_targeted(video_frames, corridors, analysis, 10.0)
+        assert quadmasks.shape == (5, 480, 640)
+        assert np.all(quadmasks == 255)
+
+    def test_distractor_region_marked_for_removal(self):
+        """Distractor mask from SAM3 should be marked as 0 in quadmask."""
+        mock_sam = MagicMock()
+        distractor_mask = np.zeros((480, 640), dtype=bool)
+        distractor_mask[140:200, 500:530] = True
+        mock_result = MagicMock()
+        mock_result.masks.data.cpu.return_value.numpy.return_value = np.array([distractor_mask])
+        mock_sam.return_value = [mock_result]
+
+        cleaner = FrameCleaner(
+            sam3_model=mock_sam, void_model=None,
+            corridor_config={
+                "corridor_multiplier": 4.0, "corridor_speed_scale": 1.5,
+                "radius_scale": 4.0, "mask_dilation_px": 0,
+                "max_aspect_ratio": 2.0, "max_size_ratio": 2.0,
+            },
+        )
+        video_frames = np.zeros((1, 480, 640, 3), dtype=np.uint8)
+        corridors = [Corridor(300, 300, 250, 50, 50, 550, 550)]
+        analysis = SceneAnalysis(
+            ball_bbox=(290, 290, 310, 310),
+            distractors=[{"label": "flagpole", "bbox": (490, 130, 540, 210)}],
+            scene_description="green with flagpole",
+        )
+        quadmasks = cleaner.generate_quadmasks_targeted(video_frames, corridors, analysis, 10.0)
+        assert np.any(quadmasks[0, 140:200, 500:530] == 0)
+
+    def test_ball_protection_zone_stays_255(self):
+        """Ball bbox region should remain 255 even if distractor overlaps."""
+        mock_sam = MagicMock()
+        distractor_mask = np.zeros((480, 640), dtype=bool)
+        distractor_mask[90:120, 90:120] = True
+        mock_result = MagicMock()
+        mock_result.masks.data.cpu.return_value.numpy.return_value = np.array([distractor_mask])
+        mock_sam.return_value = [mock_result]
+
+        cleaner = FrameCleaner(
+            sam3_model=mock_sam, void_model=None,
+            corridor_config={
+                "corridor_multiplier": 4.0, "corridor_speed_scale": 1.5,
+                "radius_scale": 4.0, "mask_dilation_px": 0,
+                "max_aspect_ratio": 2.0, "max_size_ratio": 2.0,
+            },
+        )
+        video_frames = np.zeros((1, 480, 640, 3), dtype=np.uint8)
+        corridors = [Corridor(100, 100, 80, 20, 20, 180, 180)]
+        analysis = SceneAnalysis(
+            ball_bbox=(95, 95, 105, 105),
+            distractors=[{"label": "other ball", "bbox": (85, 85, 125, 125)}],
+            scene_description="green",
+        )
+        quadmasks = cleaner.generate_quadmasks_targeted(video_frames, corridors, analysis, 10.0)
+        # Ball protection zone center should be 255
+        assert quadmasks[0, 100, 100] == 255
+
+    def test_sam3_no_mask_skips_distractor(self):
+        """If SAM3 returns no mask for a distractor, skip it gracefully."""
+        mock_sam = MagicMock()
+        mock_result = MagicMock()
+        mock_result.masks = None
+        mock_sam.return_value = [mock_result]
+
+        cleaner = FrameCleaner(
+            sam3_model=mock_sam, void_model=None,
+            corridor_config={
+                "corridor_multiplier": 4.0, "corridor_speed_scale": 1.5,
+                "radius_scale": 4.0, "mask_dilation_px": 3,
+                "max_aspect_ratio": 2.0, "max_size_ratio": 2.0,
+            },
+        )
+        video_frames = np.zeros((1, 480, 640, 3), dtype=np.uint8)
+        corridors = [Corridor(100, 100, 80, 20, 20, 180, 180)]
+        analysis = SceneAnalysis(
+            ball_bbox=(95, 95, 105, 105),
+            distractors=[{"label": "person", "bbox": (300, 100, 500, 600)}],
+            scene_description="green",
+        )
+        quadmasks = cleaner.generate_quadmasks_targeted(video_frames, corridors, analysis, 10.0)
+        assert np.all(quadmasks == 255)
+
+    def test_none_corridor_produces_all_255(self):
+        """Frames with no corridor should have all-255 quadmask."""
+        cleaner = FrameCleaner(
+            sam3_model=None, void_model=None,
+            corridor_config={
+                "corridor_multiplier": 4.0, "corridor_speed_scale": 1.5,
+                "radius_scale": 4.0, "mask_dilation_px": 3,
+                "max_aspect_ratio": 2.0, "max_size_ratio": 2.0,
+            },
+        )
+        video_frames = np.zeros((2, 100, 100, 3), dtype=np.uint8)
+        corridors = [None, None]
+        analysis = SceneAnalysis(
+            ball_bbox=None,
+            distractors=[{"label": "person", "bbox": (10, 10, 50, 50)}],
+            scene_description="green",
+        )
+        quadmasks = cleaner.generate_quadmasks_targeted(video_frames, corridors, analysis, 10.0)
         assert np.all(quadmasks == 255)
