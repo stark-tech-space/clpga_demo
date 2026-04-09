@@ -6,7 +6,9 @@ import json
 import logging
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
+from google import genai
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,13 @@ class SceneAnalysis:
     scene_description: str
 
 
+_EMPTY_ANALYSIS = SceneAnalysis(
+    ball_bbox=None,
+    distractors=[],
+    scene_description="golf course background",
+)
+
+
 class SceneAnalyzer:
     """Analyzes video frames using a VLM to identify the ball and distractors."""
 
@@ -44,6 +53,71 @@ class SceneAnalyzer:
         self._model = model
         self._client = None
 
+    def _get_client(self):
+        if self._client is None:
+            self._client = genai.Client()
+        return self._client
+
     def analyze_frame(self, frame: np.ndarray) -> SceneAnalysis:
-        """Analyze a single frame and return scene understanding."""
-        raise NotImplementedError("Will be implemented in Task 2")
+        """Analyze a single frame and return scene understanding.
+
+        Args:
+            frame: (H, W, 3) uint8 BGR frame.
+
+        Returns:
+            SceneAnalysis with ball bbox, distractor list, and scene description.
+            Returns empty analysis on any failure (fail-safe).
+        """
+        try:
+            _, jpeg_bytes = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+
+            client = self._get_client()
+            response = client.models.generate_content(
+                model=self._model,
+                contents=[
+                    {"inline_data": {"mime_type": "image/jpeg", "data": jpeg_bytes.tobytes()}},
+                    _SCENE_PROMPT,
+                ],
+            )
+
+            return self._parse_response(response.text)
+
+        except Exception:
+            logger.warning("Scene analysis failed, skipping cleaning for this segment", exc_info=True)
+            return _EMPTY_ANALYSIS
+
+    def _parse_response(self, text: str) -> SceneAnalysis:
+        """Parse Gemini JSON response into SceneAnalysis."""
+        try:
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[1]
+                cleaned = cleaned.rsplit("```", 1)[0]
+
+            data = json.loads(cleaned)
+
+            ball_bbox = None
+            if data.get("ball") is not None:
+                b = data["ball"]
+                ball_bbox = (int(b[0]), int(b[1]), int(b[2]), int(b[3]))
+
+            distractors = []
+            for d in data.get("distractors", []):
+                bbox = d.get("bbox", [])
+                if len(bbox) == 4:
+                    distractors.append({
+                        "label": str(d.get("label", "unknown")),
+                        "bbox": (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])),
+                    })
+
+            scene_desc = str(data.get("scene_description", "golf course background"))
+
+            return SceneAnalysis(
+                ball_bbox=ball_bbox,
+                distractors=distractors,
+                scene_description=scene_desc,
+            )
+
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            logger.warning("Failed to parse scene analysis response: %s", text[:200])
+            return _EMPTY_ANALYSIS
