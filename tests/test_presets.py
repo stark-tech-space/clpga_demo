@@ -60,7 +60,7 @@ class TestCleaningPresets:
     def test_default_preset_has_segment_max_frames(self):
         from clpga_demo.presets import get_preset
         preset = get_preset("default")
-        assert preset["segment_max_frames"] == 180
+        assert preset["segment_max_frames"] == 85
 
     def test_default_preset_has_clean_prompt(self):
         from clpga_demo.presets import get_preset

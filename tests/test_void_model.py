@@ -1,7 +1,5 @@
 from unittest.mock import patch, MagicMock
 import numpy as np
-import tempfile
-from pathlib import Path
 import pytest
 
 from clpga_demo.void_model import VoidModelWrapper
@@ -9,48 +7,60 @@ from clpga_demo.void_model import VoidModelWrapper
 
 class TestInpaint:
     def test_inpaint_returns_cleaned_frames(self):
-        """inpaint should return an ndarray of cleaned frames with same shape as input."""
+        """inpaint should return an ndarray of cleaned frames."""
         wrapper = VoidModelWrapper(model_dir="/fake/models", device="cpu")
         wrapper._void_dir = "/fake/models"
         wrapper._base_model_dir = "/fake/base"
+        wrapper._loaded = True
+
+        # Mock the pipeline
+        import torch
+        mock_pipe = MagicMock()
+        # Pipeline returns (1, C, T, H, W) tensor in [0, 1]
+        out_tensor = torch.zeros(1, 3, 5, 384, 672)
+        mock_pipe.return_value = MagicMock(videos=out_tensor)
+        wrapper._pipe = mock_pipe
+        wrapper._generator = torch.Generator()
 
         video_segment = np.zeros((10, 384, 672, 3), dtype=np.uint8)
         quadmask_segment = np.full((10, 384, 672), 255, dtype=np.uint8)
         quadmask_segment[:, 100:150, 200:250] = 0
 
-        with patch("clpga_demo.void_model.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-            with patch("clpga_demo.void_model.cv2.VideoCapture") as mock_cap:
-                mock_cap_instance = MagicMock()
-                mock_cap.return_value = mock_cap_instance
-                mock_cap_instance.isOpened.return_value = True
-                frames_returned = [True] * 10 + [False]
-                mock_cap_instance.read.side_effect = [
-                    (ok, np.zeros((384, 672, 3), dtype=np.uint8)) if ok else (False, None)
-                    for ok in frames_returned
-                ]
-                with patch("clpga_demo.void_model.Path") as mock_path_cls:
-                    mock_path_instance = MagicMock()
-                    mock_path_cls.return_value = mock_path_instance
-                    mock_path_instance.rglob.return_value = [Path("/fake/output/seq/output.mp4")]
-                    result = wrapper.inpaint(video_segment, quadmask_segment, "golf course background")
+        result = wrapper.inpaint(video_segment, quadmask_segment, "golf course background")
 
-        assert result.shape == video_segment.shape
         assert result.dtype == np.uint8
+        assert result.shape[1:3] == (384, 672)
+        assert result.shape[3] == 3
+        mock_pipe.assert_called_once()
 
-    def test_inpaint_raises_on_subprocess_failure(self):
-        """inpaint should raise RuntimeError if void-model process fails."""
+    def test_inpaint_calls_load_if_not_loaded(self):
+        """inpaint should call load() if not already loaded."""
         wrapper = VoidModelWrapper(model_dir="/fake/models", device="cpu")
         wrapper._void_dir = "/fake/models"
         wrapper._base_model_dir = "/fake/base"
+        wrapper._loaded = False
 
-        video_segment = np.zeros((10, 384, 672, 3), dtype=np.uint8)
-        quadmask_segment = np.full((10, 384, 672), 255, dtype=np.uint8)
+        with patch.object(wrapper, "load", return_value=wrapper) as mock_load:
+            # After load, set up the mock pipeline
+            import torch
 
-        with patch("clpga_demo.void_model.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1, stderr="CUDA OOM")
-            with pytest.raises(RuntimeError, match="void-model inference failed"):
-                wrapper.inpaint(video_segment, quadmask_segment, "golf course background")
+            def setup_after_load():
+                mock_pipe = MagicMock()
+                out_tensor = torch.zeros(1, 3, 5, 384, 672)
+                mock_pipe.return_value = MagicMock(videos=out_tensor)
+                wrapper._pipe = mock_pipe
+                wrapper._generator = torch.Generator()
+                wrapper._loaded = True
+                return wrapper
+
+            mock_load.side_effect = setup_after_load
+
+            video_segment = np.zeros((10, 384, 672, 3), dtype=np.uint8)
+            quadmask_segment = np.full((10, 384, 672), 255, dtype=np.uint8)
+
+            result = wrapper.inpaint(video_segment, quadmask_segment, "golf course")
+
+        mock_load.assert_called_once()
 
 
 class TestDownload:

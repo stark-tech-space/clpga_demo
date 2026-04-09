@@ -50,7 +50,8 @@ class TestCorridorComputation:
         corridors = cleaner.compute_corridors(rough_trajectory, ball_sizes, speeds, frame_w=640, frame_h=480)
 
         # speed * corridor_speed_scale * radius_scale = 50 * 1.5 * 4.0 = 300
-        assert corridors[0].radius == 300.0
+        # Capped to min(frame_w, frame_h) / 2 = min(640, 480) / 2 = 240
+        assert corridors[0].radius == 240.0
 
     def test_corridor_clips_to_frame_bounds(self):
         """Corridor bbox should be clipped to frame edges."""
