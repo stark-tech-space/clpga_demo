@@ -218,12 +218,12 @@ class VoidModelWrapper:
             "Strange body and strange trajectory. Distortion. "
         )
 
-        # void-model requires num_frames == video length, and both must be 4n+1.
-        # Clamp to temporal window size (85 frames) — the caller should split
-        # longer videos into overlapping segments of this size.
+        # void-model requires num_frames == video length.
+        # Frame count must satisfy: (T-1)//4+1 is even (patch_size_t=2 constraint).
+        # Valid T values: 5, 13, 21, 29, 37, 45, 53, 61, 69, 77, 85, ...  (T = 8k+5)
         effective_T = min(T_frames, _TEMPORAL_WINDOW_SIZE)
-        # Round down to nearest 4n+1 for VAE compatibility
-        effective_T = ((effective_T - 1) // 4) * 4 + 1
+        # Round down to nearest T where latent count is even: T = 8*floor((T-5)/8) + 5
+        effective_T = max(5, ((effective_T - 5) // 8) * 8 + 5)
 
         video_input = video_tensor[:, :, :effective_T]
         mask_input = mask_tensor[:, :, :effective_T]
