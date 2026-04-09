@@ -16,6 +16,7 @@ SHOT_PRESETS: dict[str, dict] = {
         "segment_overlap_frames": 16,
         "void_model_dir": None,
         "clean_prompt": "golf course background",
+        "gemini_model": "gemini-2.5-flash-preview-05-20",
     },
     "putt": {
         "smoothing_sigma_seconds": 0.1,
@@ -38,6 +39,7 @@ SHOT_PRESETS: dict[str, dict] = {
         "segment_overlap_frames": 16,
         "void_model_dir": None,
         "clean_prompt": "golf putting green background",
+        "gemini_model": "gemini-2.5-flash-preview-05-20",
     },
 }
 

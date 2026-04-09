@@ -185,6 +185,24 @@ class TestCleanCLI:
         assert resolved["corridor_multiplier"] == 6.0
 
 
+class TestGeminiCLI:
+    def test_gemini_model_parsed(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--gemini-model", "gemini-2.0-flash"])
+        assert args.gemini_model == "gemini-2.0-flash"
+
+    def test_gemini_model_default_none(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4"])
+        assert args.gemini_model is None
+
+    def test_gemini_model_resolves_to_preset(self):
+        parser = build_parser()
+        args = parser.parse_args(["in.mp4", "-o", "out.mp4", "--gemini-model", "gemini-2.0-flash"])
+        resolved = resolve_args(args)
+        assert resolved["gemini_model"] == "gemini-2.0-flash"
+
+
 class TestCleanPassthrough:
     def test_clean_params_passed_to_process_video(self):
         """All cleaning params should be forwarded from CLI to process_video."""

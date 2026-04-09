@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mask-dilation", type=int, default=None, help="Mask dilation in pixels")
     parser.add_argument("--void-model-dir", type=str, default=None, help="Path to pre-downloaded void-model")
     parser.add_argument("--clean-prompt", type=str, default=None, help="Scene description for void-model inpainting")
+    parser.add_argument("--gemini-model", type=str, default=None, help="Gemini model for scene analysis")
     return parser
 
 
@@ -58,6 +59,7 @@ def resolve_args(args: argparse.Namespace) -> dict:
         "mask_dilation": "mask_dilation_px",
         "void_model_dir": "void_model_dir",
         "clean_prompt": "clean_prompt",
+        "gemini_model": "gemini_model",
     }
 
     for cli_key, preset_key in cli_to_preset.items():

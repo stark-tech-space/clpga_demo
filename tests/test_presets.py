@@ -66,3 +66,15 @@ class TestCleaningPresets:
         from clpga_demo.presets import get_preset
         preset = get_preset("default")
         assert preset["clean_prompt"] == "golf course background"
+
+
+class TestGeminiPresets:
+    def test_default_preset_has_gemini_model(self):
+        from clpga_demo.presets import get_preset
+        preset = get_preset("default")
+        assert preset["gemini_model"] == "gemini-2.5-flash-preview-05-20"
+
+    def test_putt_preset_has_gemini_model(self):
+        from clpga_demo.presets import get_preset
+        preset = get_preset("putt")
+        assert preset["gemini_model"] == "gemini-2.5-flash-preview-05-20"
