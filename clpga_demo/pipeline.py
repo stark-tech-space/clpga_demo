@@ -8,12 +8,25 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from clpga_demo.cleaner import FrameCleaner
 from clpga_demo.cropper import VideoWriter, calculate_crop
 from clpga_demo.momentum import create_tracker
+from clpga_demo.scene_analyzer import SceneAnalyzer
 from clpga_demo.smoother import GaussianSmoother
 from clpga_demo.tracker import select_ball, track_video
+from clpga_demo.void_model import VoidModelWrapper
 
 logger = logging.getLogger(__name__)
+
+
+def _save_debug_video(path: str, frames: np.ndarray, fps: float) -> None:
+    """Write a numpy frame array to a video file for debugging."""
+    h, w = frames.shape[1:3]
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(path, fourcc, fps, (w, h))
+    for i in range(len(frames)):
+        writer.write(frames[i])
+    writer.release()
 
 
 def _retrack_cleaned(
@@ -111,6 +124,7 @@ def process_video(
     segment_overlap_frames: int = 16,
     void_model_dir: str | None = None,
     clean_prompt: str = "golf course background",
+    gemini_model: str = "gemini-2.5-flash-preview-05-20",
 ) -> None:
     """Process a pre-recorded video: track ball, smooth trajectory, crop portrait.
 
@@ -201,9 +215,6 @@ def process_video(
 
     # --- Pass 2 (optional): Clean distractors and re-track ---
     if clean:
-        from clpga_demo.cleaner import FrameCleaner
-        from clpga_demo.void_model import VoidModelWrapper
-
         void_wrapper = VoidModelWrapper(model_dir=void_model_dir)
         void_wrapper.download_if_needed()
         void_wrapper.load()
@@ -234,11 +245,64 @@ def process_video(
         valid_sizes = [s for s in ball_sizes if s > 0]
         median_ball_size = float(sorted(valid_sizes)[len(valid_sizes) // 2]) if valid_sizes else 20.0
 
-        # Generate quadmasks and run void-model
-        quadmasks = cleaner.generate_quadmasks(video_frames, corridors, positions, median_ball_size)
+        # Generate quadmasks per segment using VLM scene analysis
         segments = FrameCleaner.split_into_segments(frame_count, segment_max_frames, segment_overlap_frames)
-        cleaned_segments = cleaner.clean_segments(video_frames, quadmasks, segments, clean_prompt)
+        analyzer = SceneAnalyzer(model=gemini_model)
+
+        all_quadmasks = np.full((frame_count, src_h, src_w), 255, dtype=np.uint8)
+        segment_prompts: list[str] = []
+
+        for seg_start, seg_end in segments:
+            mid_idx = seg_start + (seg_end - seg_start) // 2
+            keyframe = video_frames[mid_idx]
+            logger.info("Analyzing keyframe %d for segment %d-%d ...", mid_idx, seg_start, seg_end)
+            analysis = analyzer.analyze_frame(keyframe)
+            segment_prompts.append(analysis.scene_description)
+
+            logger.info(
+                "Scene: %s | Ball: %s | Distractors: %d",
+                analysis.scene_description,
+                analysis.ball_bbox,
+                len(analysis.distractors),
+            )
+
+            seg_frames = video_frames[seg_start:seg_end]
+            seg_corridors = corridors[seg_start:seg_end]
+            seg_quadmasks = cleaner.generate_quadmasks_targeted(
+                seg_frames, seg_corridors, analysis, median_ball_size,
+            )
+            all_quadmasks[seg_start:seg_end] = seg_quadmasks
+
+        # Run void-model per segment with scene-aware prompts
+        cleaned_segments = []
+        for (seg_start, seg_end), prompt in zip(segments, segment_prompts):
+            seg_video = video_frames[seg_start:seg_end]
+            seg_mask = all_quadmasks[seg_start:seg_end]
+
+            if np.all(seg_mask == 255):
+                logger.debug("Segment %d-%d: no distractors, skipping", seg_start, seg_end)
+                cleaned_segments.append(seg_video.copy())
+                continue
+
+            logger.info("Cleaning segment %d-%d: %s", seg_start, seg_end, prompt)
+            result = void_wrapper.inpaint(seg_video, seg_mask, prompt)
+            cleaned_segments.append(result)
+
         cleaned_video = FrameCleaner.blend_segments(cleaned_segments, segments, frame_count)
+
+        # Save intermediate outputs for debugging
+        output_dir = Path(output).parent
+        stem = Path(output).stem
+        _save_debug_video(
+            str(output_dir / f"{stem}_cleaned.mp4"),
+            cleaned_video, fps,
+        )
+        _save_debug_video(
+            str(output_dir / f"{stem}_quadmask.mp4"),
+            np.stack([cv2.cvtColor(q, cv2.COLOR_GRAY2BGR) for q in all_quadmasks]),
+            fps,
+        )
+        logger.info("Saved debug videos: %s_cleaned.mp4, %s_quadmask.mp4", stem, stem)
 
         # Re-track on cleaned frames
         tracker2 = create_tracker(

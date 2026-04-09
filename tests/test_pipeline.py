@@ -218,29 +218,38 @@ class TestKalmanGapHandling:
         assert Path(output_path).exists()
 
 
-class TestCleaningPipeline:
-    def test_clean_flag_invokes_cleaning_pass(self, tmp_path):
-        """When clean=True, process_video should use FrameCleaner."""
+class TestVLMCleaningPipeline:
+    def test_clean_creates_scene_analyzer(self, tmp_path):
+        """When clean=True, process_video should create SceneAnalyzer and use targeted quadmasks."""
+        from unittest.mock import MagicMock
+
         input_path = str(tmp_path / "input.mp4")
         output_path = str(tmp_path / "output.mp4")
         _create_test_video(input_path, frames=20)
 
         with patch("clpga_demo.pipeline.track_video", side_effect=lambda s, **kw: _mock_track_video(s)):
-            with patch("clpga_demo.cleaner.FrameCleaner") as MockCleaner:
-                mock_instance = MockCleaner.return_value
-                mock_instance.compute_corridors.return_value = [None] * 20
-                mock_instance.generate_quadmasks.return_value = np.zeros((20, 240, 320), dtype=np.uint8)
-                mock_instance.clean_segments.return_value = [np.zeros((20, 240, 320, 3), dtype=np.uint8)]
-                MockCleaner.split_into_segments.return_value = [(0, 20)]
-                MockCleaner.blend_segments.return_value = np.zeros((20, 240, 320, 3), dtype=np.uint8)
-                with patch("clpga_demo.void_model.VoidModelWrapper") as MockVoid:
-                    mock_void = MockVoid.return_value
-                    mock_void.download_if_needed.return_value = "/fake"
-                    with patch("clpga_demo.pipeline._retrack_cleaned") as mock_retrack:
-                        mock_retrack.return_value = [(100 + i * 10, 120) for i in range(20)]
-                        process_video(input_path, output_path, clean=True)
+            with patch("clpga_demo.pipeline.SceneAnalyzer") as MockAnalyzer:
+                mock_analyzer = MockAnalyzer.return_value
+                mock_analyzer.analyze_frame.return_value = MagicMock(
+                    ball_bbox=(100, 120, 110, 130),
+                    distractors=[],
+                    scene_description="test green",
+                )
+                with patch("clpga_demo.pipeline.FrameCleaner") as MockCleaner:
+                    mock_cleaner = MockCleaner.return_value
+                    mock_cleaner.compute_corridors.return_value = [None] * 20
+                    mock_cleaner.generate_quadmasks_targeted.return_value = np.full((20, 240, 320), 255, dtype=np.uint8)
+                    MockCleaner.split_into_segments.return_value = [(0, 20)]
+                    MockCleaner.blend_segments.return_value = np.zeros((20, 240, 320, 3), dtype=np.uint8)
+                    with patch("clpga_demo.pipeline.VoidModelWrapper") as MockVoid:
+                        mock_void = MockVoid.return_value
+                        mock_void.download_if_needed.return_value = "/fake"
+                        with patch("clpga_demo.pipeline._retrack_cleaned") as mock_retrack:
+                            mock_retrack.return_value = [(100 + i * 10, 120) for i in range(20)]
+                            process_video(input_path, output_path, clean=True)
 
-        assert MockCleaner.called
+        assert MockAnalyzer.called
+        assert mock_cleaner.generate_quadmasks_targeted.called
 
     def test_clean_false_skips_cleaning(self, tmp_path):
         """When clean=False (default), cleaning pass should be skipped."""

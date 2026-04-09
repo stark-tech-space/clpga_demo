@@ -108,6 +108,7 @@ def main() -> None:
             segment_overlap_frames=resolved.get("segment_overlap_frames", 16),
             void_model_dir=resolved.get("void_model_dir"),
             clean_prompt=resolved.get("clean_prompt", "golf course background"),
+            gemini_model=resolved.get("gemini_model", "gemini-2.5-flash-preview-05-20"),
         )
     except (ValueError, RuntimeError) as e:
         print(f"Error: {e}", file=sys.stderr)
